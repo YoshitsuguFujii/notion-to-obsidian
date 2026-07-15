@@ -1,0 +1,8 @@
+.DS_Store
+.env
+.state/
+*.log
+coverage/
+dist/
+node_modules/
+.steering/

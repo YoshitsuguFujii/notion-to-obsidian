@@ -1,0 +1,123 @@
+# Notion API access. The token is read only from NOTION_TOKEN.
+notion:
+  roots:
+    # Required. Stable UUID of a root page shared with the Integration.
+    - page_id: '00000000-0000-0000-0000-000000000000'
+      # Required. Local filename/directory label used for this root.
+      local_name: 'Notes'
+  # Optional, default 2.5. Keep below Notion's average 3 requests/second limit.
+  request_rate_per_second: 2.5
+  # Optional positive integer, default 2. Maximum simultaneous requests.
+  concurrency: 2
+
+obsidian:
+  # Required. Existing Vault path; ~ and absolute paths are supported.
+  vault_path: '~/Documents/MyVault'
+  # Required. Dedicated directory inside the Vault. Never use the Vault root,
+  # home directory, /, a path outside the Vault, or a symlink escape.
+  managed_path: 'Notion Mirror'
+
+sync:
+  # Optional positive integer, default 2. Consecutive complete censuses before
+  # a missing managed resource can move to .trash.
+  deletion_grace_runs: 2
+  # Optional number from 0 through 1, default 0.20. Trash ratio requiring
+  # an explicit --allow-large-trash override.
+  maximum_trash_ratio: 0.20
+  # Optional non-negative integer, default 50. Trash item count requiring
+  # an explicit --allow-large-trash override.
+  maximum_trash_count: 50
+  # Optional boolean, default false. External non-Notion assets stay remote
+  # unless enabled; enabled downloads are subject to SSRF validation.
+  download_external_assets: false
+  # Optional positive number, default 100. Maximum asset size in MiB.
+  maximum_asset_size_mb: 100
+  # Optional non-empty lists. Notion-hosted assets use broader allowlists to
+  # preserve common attachments in the local mirror.
+  notion_asset_allowed_content_types:
+    - image/jpeg
+    - image/png
+    - image/gif
+    - image/webp
+    - image/svg+xml
+    - application/pdf
+    - audio/mpeg
+    - audio/mp4
+    - video/mp4
+    - text/plain
+    - application/msword
+    - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+    - application/vnd.ms-excel
+    - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+    - application/vnd.ms-powerpoint
+    - application/vnd.openxmlformats-officedocument.presentationml.presentation
+    - application/zip
+    - application/x-zip-compressed
+    - video/quicktime
+    - image/heic
+    - audio/wav
+    - audio/x-wav
+    - text/csv
+    - text/markdown
+    - application/json
+  notion_asset_allowed_extensions:
+    - .jpg
+    - .jpeg
+    - .png
+    - .gif
+    - .webp
+    - .svg
+    - .pdf
+    - .mp3
+    - .m4a
+    - .mp4
+    - .txt
+    - .doc
+    - .docx
+    - .xls
+    - .xlsx
+    - .ppt
+    - .pptx
+    - .zip
+    - .mov
+    - .heic
+    - .wav
+    - .csv
+    - .md
+    - .json
+  # External URL downloads remain restricted to the narrower allowlists.
+  external_asset_allowed_content_types:
+    - image/jpeg
+    - image/png
+    - image/gif
+    - image/webp
+    - image/svg+xml
+    - application/pdf
+    - audio/mpeg
+    - audio/mp4
+    - video/mp4
+    - text/plain
+  external_asset_allowed_extensions:
+    - .jpg
+    - .jpeg
+    - .png
+    - .gif
+    - .webp
+    - .svg
+    - .pdf
+    - .mp3
+    - .m4a
+    - .mp4
+    - .txt
+
+logging:
+  # Optional, default pretty. Allowed values: pretty, json.
+  format: 'pretty'
+  # Optional, default info. Allowed: debug, info, warn, error.
+  # The sync --verbose option temporarily enables debug output.
+  level: 'info'
+
+state:
+  # Optional, default shown below. Relative paths resolve from this config
+  # file; the adjacent .lock file prevents concurrent sync runs.
+  database_path: './.state/notion-to-obsidian.db'

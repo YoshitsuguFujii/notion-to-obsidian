@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.notion-to-obsidian</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Replace every /Users/you path and confirm the Node.js path with: command -v node -->
+    <string>/usr/local/bin/node</string>
+    <!-- Keep NOTION_TOKEN in this chmod 600 file, never directly in this plist. -->
+    <string>--env-file=/Users/you/source/notion-to-obsidian/.env</string>
+    <string>/Users/you/source/notion-to-obsidian/dist/cli/index.js</string>
+    <string>sync</string>
+    <string>--config</string>
+    <string>/Users/you/source/notion-to-obsidian/config.yaml</string>
+    <string>--json</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/you/source/notion-to-obsidian</string>
+
+  <!-- 1800 = every 30 minutes. Use 3600 for hourly execution. -->
+  <key>StartInterval</key>
+  <integer>1800</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/you/Library/Logs/notion-to-obsidian.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/Library/Logs/notion-to-obsidian.stderr.log</string>
+
+  <!-- The CLI state-database lock rejects overlapping sync processes. -->
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
