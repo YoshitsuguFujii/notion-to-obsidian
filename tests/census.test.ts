@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { NotionClient } from '../src/notion/types.js';
 import { censusRoot } from '../src/notion/census.js';
+import { planResourcePaths } from '../src/domain/path-plan.js';
 
 const rootPage = {
   object: 'page',
@@ -52,7 +53,106 @@ function childPage(id: string, title: string, parentId: string) {
   };
 }
 
+function childBlock(id: string, type = 'toggle') {
+  return {
+    object: 'block',
+    id,
+    type,
+    [type]: {},
+    has_children: true,
+  };
+}
+
 describe('censusRoot', () => {
+  it('同期ルートを外部の親から切り離して最上位のパスに配置する', async () => {
+    const retrievePage = vi.fn().mockResolvedValue({
+      ...rootPage,
+      parent: { type: 'page_id', page_id: 'outside' },
+    });
+
+    const result = await censusRoot(client({ retrievePage }), 'root');
+
+    expect(() => planResourcePaths(result.resources)).not.toThrow();
+    expect(result.resources[0]).toMatchObject({
+      notionId: 'root',
+      parentType: 'workspace',
+    });
+    expect(result.resources[0]).not.toHaveProperty('parentId');
+  });
+
+  it('一般ブロック内にネストした子ページを発見する', async () => {
+    const listBlockChildren = vi.fn((id: string) =>
+      Promise.resolve({
+        results:
+          id === 'root'
+            ? [childBlock('toggle')]
+            : id === 'toggle'
+              ? [childPage('nested', 'Nested', 'root')]
+              : [],
+        has_more: false,
+        next_cursor: null,
+      }),
+    );
+
+    const result = await censusRoot(client({ listBlockChildren }), 'root');
+
+    expect(result.resources).toContainEqual(
+      expect.objectContaining({ notionId: 'nested', title: 'Nested' }),
+    );
+    expect(result.status).toBe('complete');
+  });
+
+  it('循環する一般ブロックを一度ずつ探索して完了する', async () => {
+    const listBlockChildren = vi.fn((id: string) =>
+      Promise.resolve({
+        results:
+          id === 'root'
+            ? [childBlock('block-a', 'synced_block')]
+            : id === 'block-a'
+              ? [childBlock('block-b', 'synced_block')]
+              : id === 'block-b'
+                ? [childBlock('block-a', 'synced_block')]
+                : [],
+        has_more: false,
+        next_cursor: null,
+      }),
+    );
+
+    const result = await censusRoot(client({ listBlockChildren }), 'root');
+
+    expect(result.status).toBe('complete');
+    expect(listBlockChildren.mock.calls.map(([id]) => id)).toEqual([
+      'root',
+      'block-a',
+      'block-b',
+    ]);
+  });
+
+  it('一般ブロックの子取得に失敗したcensusをpartialとして削除判定を許可しない', async () => {
+    const listBlockChildren = vi.fn((id: string) => {
+      if (id === 'toggle')
+        return Promise.reject(new Error('service unavailable'));
+      return Promise.resolve({
+        results: id === 'root' ? [childBlock('toggle')] : [],
+        has_more: false,
+        next_cursor: null,
+      });
+    });
+
+    const result = await censusRoot(client({ listBlockChildren }), 'root');
+
+    expect(result).toMatchObject({
+      status: 'partial',
+      deletionAllowed: false,
+    });
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({
+        type: 'child_list_incomplete',
+        resourceId: 'toggle',
+      }),
+    );
+  });
+
   it('database取得結果からData Source IDを解決する', async () => {
     const listBlockChildren = vi.fn((id: string) =>
       Promise.resolve({
@@ -284,7 +384,7 @@ describe('censusRoot', () => {
     );
   });
 
-  it('Search の失敗や判断不能を直接探索の削除判定に使わない', async () => {
+  it('Searchに失敗したcensusをpartialとして削除判定を許可しない', async () => {
     const result = await censusRoot(
       client({
         search: vi.fn().mockRejectedValue(new Error('search unavailable')),
@@ -292,8 +392,14 @@ describe('censusRoot', () => {
       'root',
     );
 
-    expect(result.status).toBe('complete');
-    expect(result.deletionAllowed).toBe(true);
+    expect(result.status).toBe('partial');
+    expect(result.deletionAllowed).toBe(false);
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({
+        type: 'search_incomplete',
+        resourceId: 'root',
+      }),
+    );
   });
 
   it('Search 候補の parent chain が別 root で終わる場合は判断根拠にしない', async () => {

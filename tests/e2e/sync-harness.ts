@@ -36,6 +36,7 @@ export interface MockPage {
   blocks?: Array<Record<string, unknown>>;
   markdownTruncated?: boolean;
   unknownBlockIds?: string[];
+  discoverableAsChild?: boolean;
 }
 
 interface MockDataSource {
@@ -77,6 +78,7 @@ export interface SyncHarness {
   client: NotionClient;
   setPages(pages: MockPage[]): void;
   failRoot(value: boolean): void;
+  failSearch(value: boolean): void;
   sync(options?: SyncOptions): ReturnType<typeof runSyncOrchestrator>;
   close(): Promise<void>;
 }
@@ -86,6 +88,7 @@ export async function createSyncHarness(
   harnessOptions: {
     downloadAsset?: (request: DownloadRequest) => Promise<DownloadResult>;
     dataSources?: MockDataSource[];
+    blockChildren?: Readonly<Record<string, Array<Record<string, unknown>>>>;
   } = {},
 ): Promise<SyncHarness> {
   const vault = await mkdtemp(join(tmpdir(), 'notion-e2e-'));
@@ -93,6 +96,7 @@ export async function createSyncHarness(
   const store = new SqliteStateStore(join(vault, 'state.db'));
   let pages = new Map(initialPages.map((page) => [page.id, page]));
   let rootFailure = false;
+  let searchFailure = false;
   let run = 0;
   const client: NotionClient = {
     retrievePage: vi.fn((pageId: string) => {
@@ -132,7 +136,10 @@ export async function createSyncHarness(
     }),
     listBlockChildren: vi.fn((parentId: string) => {
       const children = [...pages.values()]
-        .filter((page) => page.parentId === parentId)
+        .filter(
+          (page) =>
+            page.parentId === parentId && page.discoverableAsChild !== false,
+        )
         .map((page) => ({
           id: page.id,
           type: 'child_page',
@@ -144,7 +151,11 @@ export async function createSyncHarness(
           url: `https://www.notion.so/${page.id}`,
         }));
       return Promise.resolve(
-        cursorPage([...children, ...(pages.get(parentId)?.blocks ?? [])]),
+        cursorPage([
+          ...children,
+          ...(pages.get(parentId)?.blocks ?? []),
+          ...(harnessOptions.blockChildren?.[parentId] ?? []),
+        ]),
       );
     }),
     queryDataSource: vi.fn((dataSourceId: string) => {
@@ -153,7 +164,11 @@ export async function createSyncHarness(
           ?.rows ?? [];
       return Promise.resolve(cursorPage(rows.map(pageResponse)));
     }),
-    search: vi.fn(() => Promise.resolve(cursorPage([]))),
+    search: vi.fn(() =>
+      searchFailure
+        ? Promise.reject(new Error('search unavailable'))
+        : Promise.resolve(cursorPage([])),
+    ),
   };
   const config: AppConfig = {
     notion: {
@@ -197,6 +212,9 @@ export async function createSyncHarness(
     },
     failRoot(value) {
       rootFailure = value;
+    },
+    failSearch(value) {
+      searchFailure = value;
     },
     sync(options = {}) {
       return runSyncOrchestrator(config, options, {
