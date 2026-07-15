@@ -1,4 +1,4 @@
-import { access, lstat } from 'node:fs/promises';
+import { access, lstat, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname } from 'node:path';
 import { loadConfig } from '../config/index.js';
@@ -28,6 +28,24 @@ async function canWrite(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function nearestExistingDirectory(
+  path: string,
+  boundary: string,
+): Promise<string | undefined> {
+  let candidate = path;
+  while (true) {
+    try {
+      return (await stat(candidate)).isDirectory() ? candidate : undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
+    }
+    if (candidate === boundary) return undefined;
+    const parent = dirname(candidate);
+    if (parent === candidate) return undefined;
+    candidate = parent;
   }
 }
 
@@ -72,6 +90,20 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       name: 'write_permission',
       ok: writable,
       message: writable ? 'Vault is writable' : 'Vault is not writable',
+    });
+    const managedWriteTarget = await nearestExistingDirectory(
+      config.obsidian.managedPath,
+      config.obsidian.vaultPath,
+    );
+    const managedPathWritable = managedWriteTarget
+      ? await canWrite(managedWriteTarget)
+      : false;
+    checks.push({
+      name: 'managed_path_writable',
+      ok: managedPathWritable,
+      message: managedPathWritable
+        ? 'Managed path or its nearest existing parent is writable'
+        : 'Managed path cannot be created or written; ensure it or its nearest existing parent is a writable directory',
     });
     let symlinkSafe = true;
     try {
