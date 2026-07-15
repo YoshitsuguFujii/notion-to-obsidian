@@ -32,6 +32,7 @@ function notion(
     listBlockChildren,
     retrieveMarkdown: vi.fn(),
     retrievePage: vi.fn(),
+    retrieveDatabase: vi.fn(),
     queryDataSource: vi.fn(),
     search: vi.fn(),
   };

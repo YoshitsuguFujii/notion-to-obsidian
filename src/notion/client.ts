@@ -66,6 +66,11 @@ export class NotionSdkClient implements NotionClient {
   retrievePage(pageId: string) {
     return this.request(() => this.sdk.pages.retrieve({ page_id: pageId }));
   }
+  retrieveDatabase(databaseId: string) {
+    return this.request(() =>
+      this.sdk.databases.retrieve({ database_id: databaseId }),
+    );
+  }
   retrieveMarkdown(pageId: string) {
     return this.request(() =>
       this.sdk.pages.retrieveMarkdown({ page_id: pageId }),

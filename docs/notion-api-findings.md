@@ -44,6 +44,7 @@
 - **database はコンテナ**であり、複数の **data source**（レコードのテーブル）を保持する。
 - `databases.query` は**レガシー**で、`2026-03-11` ヘッダ使用時は利用不可（呼ぶと警告/エラー）。代わりに `notion.dataSources.query({ data_source_id, ... })` を使う。
 - `child_database` ブロックが参照する database を retrieve すると `data_sources` 配列（id 群）が得られる。linked view 経由で同じ data source を複数回発見しうるため **ID で重複排除**する。
+- 実装とテストは `databases.retrieve({ database_id })` が `{ id, data_sources: [{ id, name }] }` を返す形状に依存する。mock clientもこの形状に合わせ、`NOTION_TEST_TOKEN`を設定できる環境ではread-only integration testで実API応答との一致を継続確認する。
 
 ## レート制限とエラー
 

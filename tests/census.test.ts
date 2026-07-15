@@ -15,6 +15,7 @@ const rootPage = {
 function client(overrides: Partial<NotionClient> = {}): NotionClient {
   return {
     retrievePage: vi.fn().mockResolvedValue(rootPage),
+    retrieveDatabase: vi.fn(),
     retrieveMarkdown: vi.fn(),
     listBlockChildren: vi
       .fn()
@@ -24,6 +25,18 @@ function client(overrides: Partial<NotionClient> = {}): NotionClient {
       .fn()
       .mockResolvedValue({ results: [], has_more: false, next_cursor: null }),
     ...overrides,
+  };
+}
+
+function childDatabase(id: string, title: string, parentId: string) {
+  return {
+    object: 'block',
+    id,
+    type: 'child_database',
+    child_database: { title },
+    parent: { type: 'page_id', page_id: parentId },
+    last_edited_time: '2026-07-11T00:00:00.000Z',
+    in_trash: false,
   };
 }
 
@@ -40,6 +53,106 @@ function childPage(id: string, title: string, parentId: string) {
 }
 
 describe('censusRoot', () => {
+  it('database取得結果からData Source IDを解決する', async () => {
+    const listBlockChildren = vi.fn((id: string) =>
+      Promise.resolve({
+        results:
+          id === 'root' ? [childDatabase('database', 'Tasks', 'root')] : [],
+        has_more: false,
+        next_cursor: null,
+      }),
+    );
+    const retrieveDatabase = vi.fn().mockResolvedValue({
+      id: 'database',
+      data_sources: [{ id: 'source', name: 'Tasks' }],
+    });
+
+    const result = await censusRoot(
+      client({ listBlockChildren, retrieveDatabase }),
+      'root',
+    );
+
+    expect(result.resources).toContainEqual(
+      expect.objectContaining({
+        notionId: 'database',
+        objectType: 'database',
+        dataSourceId: 'source',
+      }),
+    );
+    expect(result.status).toBe('complete');
+    expect(retrieveDatabase).toHaveBeenCalledOnce();
+  });
+
+  it('database取得に失敗したcensusをpartialとして削除判定を許可しない', async () => {
+    const listBlockChildren = vi.fn((id: string) =>
+      Promise.resolve({
+        results:
+          id === 'root' ? [childDatabase('database', 'Tasks', 'root')] : [],
+        has_more: false,
+        next_cursor: null,
+      }),
+    );
+
+    const result = await censusRoot(
+      client({
+        listBlockChildren,
+        retrieveDatabase: vi
+          .fn()
+          .mockRejectedValue(new Error('service unavailable')),
+      }),
+      'root',
+    );
+
+    expect(result).toMatchObject({
+      status: 'partial',
+      deletionAllowed: false,
+      warnings: [
+        expect.objectContaining({
+          type: 'database_retrieve_failed',
+          resourceId: 'database',
+        }),
+      ],
+    });
+  });
+
+  it('複数Data Sourceを持つdatabaseでは先頭を採用して警告する', async () => {
+    const listBlockChildren = vi.fn((id: string) =>
+      Promise.resolve({
+        results:
+          id === 'root' ? [childDatabase('database', 'Tasks', 'root')] : [],
+        has_more: false,
+        next_cursor: null,
+      }),
+    );
+
+    const result = await censusRoot(
+      client({
+        listBlockChildren,
+        retrieveDatabase: vi.fn().mockResolvedValue({
+          id: 'database',
+          data_sources: [
+            { id: 'source-primary', name: 'Tasks' },
+            { id: 'source-secondary', name: 'Archive' },
+          ],
+        }),
+      }),
+      'root',
+    );
+
+    expect(result.resources).toContainEqual(
+      expect.objectContaining({
+        notionId: 'database',
+        dataSourceId: 'source-primary',
+      }),
+    );
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({
+        type: 'multiple_data_sources',
+        resourceId: 'database',
+      }),
+    );
+  });
+
   it('親の更新日時に関係なく全 cursor と子階層を探索する', async () => {
     const listBlockChildren = vi.fn((id: string, cursor?: string) => {
       if (id === 'root' && cursor === undefined)
