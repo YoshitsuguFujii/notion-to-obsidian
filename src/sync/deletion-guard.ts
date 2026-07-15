@@ -36,7 +36,6 @@ export function planMissingResources(
   options: MissingPlanOptions,
 ): MissingResourcePlan {
   if (
-    options.dryRun ||
     options.blockingFailure !== undefined ||
     options.mode === 'page' ||
     options.root.status !== 'complete' ||

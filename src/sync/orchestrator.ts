@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { access, readFile } from 'node:fs/promises';
+import { posix } from 'node:path';
 import type { AppConfig } from '../config/index.js';
 import { processPageAssets } from '../assets/processor.js';
 import type { DownloadResult } from '../assets/http-downloader.js';
@@ -677,19 +678,44 @@ export async function runSyncOrchestrator(
       }
       for (const item of planned) {
         const type = item.reconciliation.type;
-        const absolutePath = joinManagedPath(
-          config.obsidian.managedPath,
-          item.path.expectedPath,
-        );
         if (type === 'MOVE' && item.stored?.localPath) {
-          await moveManagedFile({
+          const moveResult = await moveManagedFile({
             managedRoot: config.obsidian.managedPath,
             sourcePath: item.stored.localPath,
             targetPath: item.path.expectedPath,
             notionId: item.resource.notionId,
             stored: item.stored,
           });
+          if (moveResult.targetPath !== item.path.expectedPath) {
+            const extension = posix.extname(moveResult.targetPath);
+            item.path = {
+              ...item.path,
+              expectedPath: moveResult.targetPath,
+              resolvedFilename: posix.basename(
+                moveResult.targetPath,
+                extension,
+              ),
+            };
+            item.structureHash = hash(
+              JSON.stringify({
+                rootId: item.resource.rootId,
+                parentId: item.resource.parentId,
+                expectedPath: item.path.expectedPath,
+              }),
+            );
+          }
+          item.warnings.push(
+            ...moveResult.warnings.map((message) => ({
+              type: 'move_collision',
+              message,
+            })),
+          );
+          warningCount += moveResult.warnings.length;
         }
+        const absolutePath = joinManagedPath(
+          config.obsidian.managedPath,
+          item.path.expectedPath,
+        );
         if (
           type === 'CREATE' ||
           type === 'UPDATE' ||

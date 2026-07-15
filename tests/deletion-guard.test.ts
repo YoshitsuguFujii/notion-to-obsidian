@@ -71,7 +71,6 @@ describe('planMissingResources', () => {
       },
     ],
     ['page mode', { mode: 'page' as const }],
-    ['dry-run', { dryRun: true }],
     ['permission error', { blockingFailure: 'permission' as const }],
     ['rate limit', { blockingFailure: 'rate_limited' as const }],
     ['server error', { blockingFailure: 'server' as const }],
@@ -86,6 +85,20 @@ describe('planMissingResources', () => {
         ...override,
       }),
     ).toEqual({ updates: [], trash: [] });
+  });
+
+  it('dry-runでもgrace runs到達時のmissing更新とTRASHを予測する', () => {
+    expect(
+      planMissingResources({
+        root: census(),
+        existing: [resource({ missingCount: 1 })],
+        mode: 'full',
+        dryRun: true,
+      }),
+    ).toEqual({
+      updates: [{ notionId: 'page-id', missingCount: 2 }],
+      trash: [{ notionId: 'page-id', reason: 'confirmed_not_found' }],
+    });
   });
 
   it('1回目の missing は count の更新だけを計画する', () => {
