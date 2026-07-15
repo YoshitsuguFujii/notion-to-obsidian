@@ -109,6 +109,8 @@ node --env-file=.env dist/cli/index.js sync --config config.yaml --dry-run
 
 `plan`と同じく永続的な副作用なしでsyncフローを確認します。初回は必ずdoctor、plan、dry-runの順に成功させてください。
 
+`plan` / `dry-run`は、grace runs到達予定のTRASHを含む予定actionを予測表示します。予測される退避が大量退避の安全弁（`maximum_trash_ratio` / `maximum_trash_count`）を超える場合は、`plan` / `dry-run`の時点で終了コード3（安全チェックでApply中止）を返して停止します。これは実同期の前に安全弁超過を警告する意図的な挙動です（`--allow-large-trash`で明示的に許可できます）。
+
 ### 4. 実同期
 
 ```sh
