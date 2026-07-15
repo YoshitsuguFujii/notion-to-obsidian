@@ -80,7 +80,8 @@ function unknownTokenRanges(markdown: string): TokenRange[] {
     const end = node.position?.end?.offset;
     if (
       node.type === 'html' &&
-      node.value === '<unknown>' &&
+      typeof node.value === 'string' &&
+      /^<unknown(\s[^>]*)?\/?>$/u.test(node.value) &&
       typeof start === 'number' &&
       typeof end === 'number'
     ) {

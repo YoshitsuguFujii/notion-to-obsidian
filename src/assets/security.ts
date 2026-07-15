@@ -34,19 +34,24 @@ function parseIpv4(address: string): readonly number[] | undefined {
 
 function isBlockedIpv4(address: string): boolean {
   const octets = parseIpv4(address);
-  if (!octets) return false;
-  const [first, second, third, fourth] = octets;
+  if (!octets) return true;
+  const [first, second, third] = octets;
   return (
-    first === 0 ||
+    first === undefined ||
+    first < 1 ||
+    first > 223 ||
     first === 10 ||
     (first === 100 && second !== undefined && second >= 64 && second <= 127) ||
     first === 127 ||
+    (first === 169 && second === 254) ||
     (first === 172 && second !== undefined && second >= 16 && second <= 31) ||
     (first === 192 && second === 0 && third === 0) ||
+    (first === 192 && second === 0 && third === 2) ||
+    (first === 192 && second === 88 && third === 99) ||
     (first === 192 && second === 168) ||
     (first === 198 && (second === 18 || second === 19)) ||
-    (first === 169 && second === 254) ||
-    (first === 255 && second === 255 && third === 255 && fourth === 255)
+    (first === 198 && second === 51 && third === 100) ||
+    (first === 203 && second === 0 && third === 113)
   );
 }
 
@@ -54,42 +59,82 @@ function normalizeIpv6(address: string): string {
   return address.toLowerCase().split('%')[0] ?? address.toLowerCase();
 }
 
-function mappedIpv4Address(address: string): string | undefined {
-  if (!address.startsWith('::ffff:')) return undefined;
-  const suffix = address.slice('::ffff:'.length);
-  if (isIP(suffix) === 4) return suffix;
-  const groups = suffix.split(':');
-  if (groups.length !== 2) return undefined;
-  const high = Number.parseInt(groups[0] ?? '', 16);
-  const low = Number.parseInt(groups[1] ?? '', 16);
-  if (
-    !Number.isInteger(high) ||
-    !Number.isInteger(low) ||
-    high < 0 ||
-    high > 0xffff ||
-    low < 0 ||
-    low > 0xffff
-  ) {
-    return undefined;
+function parseIpv6(address: string): readonly number[] | undefined {
+  let normalized = normalizeIpv6(address);
+  if (isIP(normalized) !== 6) return undefined;
+
+  const lastColon = normalized.lastIndexOf(':');
+  const ipv4Suffix = normalized.slice(lastColon + 1);
+  if (ipv4Suffix.includes('.')) {
+    const octets = parseIpv4(ipv4Suffix);
+    if (!octets) return undefined;
+    const [first, second, third, fourth] = octets;
+    if (
+      first === undefined ||
+      second === undefined ||
+      third === undefined ||
+      fourth === undefined
+    ) {
+      return undefined;
+    }
+    const high = (first << 8) | second;
+    const low = (third << 8) | fourth;
+    normalized = `${normalized.slice(0, lastColon + 1)}${high.toString(16)}:${low.toString(16)}`;
   }
-  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+
+  const halves = normalized.split('::');
+  if (halves.length > 2) return undefined;
+  const parseGroups = (value: string): number[] | undefined => {
+    if (value === '') return [];
+    const groups = value.split(':');
+    if (groups.some((group) => !/^[0-9a-f]{1,4}$/u.test(group))) {
+      return undefined;
+    }
+    return groups.map((group) => Number.parseInt(group, 16));
+  };
+  const left = parseGroups(halves[0] ?? '');
+  const right = parseGroups(halves[1] ?? '');
+  if (!left || !right) return undefined;
+
+  if (halves.length === 1) return left.length === 8 ? left : undefined;
+  const omittedGroupCount = 8 - left.length - right.length;
+  if (omittedGroupCount < 1) return undefined;
+  return [...left, ...Array<number>(omittedGroupCount).fill(0), ...right];
 }
 
 function isBlockedIpv6(address: string): boolean {
-  if (isIP(address) !== 6) return false;
-  const normalized = normalizeIpv6(address);
-  if (normalized === '::' || normalized === '::1') return true;
-  const mappedIpv4 = mappedIpv4Address(normalized);
-  if (mappedIpv4) return isBlockedIpv4(mappedIpv4);
-  const firstGroup = Number.parseInt(normalized.split(':')[0] ?? '', 16);
+  const groups = parseIpv6(address);
+  if (!groups) return true;
+  const [first, second] = groups;
+
+  if (
+    groups.slice(0, 5).every((group) => group === 0) &&
+    groups[5] === 0xffff
+  ) {
+    const high = groups[6];
+    const low = groups[7];
+    if (high === undefined || low === undefined) return true;
+    return isBlockedIpv4(
+      [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.'),
+    );
+  }
+
   return (
-    (firstGroup >= 0xfc00 && firstGroup <= 0xfdff) ||
-    (firstGroup >= 0xfe80 && firstGroup <= 0xfebf)
+    first === undefined ||
+    second === undefined ||
+    first < 0x2000 ||
+    first > 0x3fff ||
+    (first === 0x2001 && (second === 0 || second === 0x0db8)) ||
+    first === 0x2002
   );
 }
 
 export function isBlockedIpAddress(address: string): boolean {
-  return isBlockedIpv4(address) || isBlockedIpv6(address);
+  const normalized = normalizeIpv6(address);
+  const family = isIP(normalized);
+  if (family === 4) return isBlockedIpv4(normalized);
+  if (family === 6) return isBlockedIpv6(normalized);
+  return true;
 }
 
 const defaultLookup: AddressLookup = async (hostname) =>

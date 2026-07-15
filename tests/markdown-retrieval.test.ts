@@ -141,4 +141,40 @@ describe('retrievePageMarkdown', () => {
     expect(result.needsBlockFallback).toBe(false);
     expect(result.markdown).toBe('```text\n<unknown>\n```\n\nReal: Resolved');
   });
+
+  it.each([
+    '<unknown>',
+    '<unknown url="https://example.com/file.pdf" alt="file"/>',
+    '<unknown url="https://example.com/file.pdf">',
+  ])('%s を unknown block として置換する', async (unknownToken) => {
+    const retrieveMarkdown = vi.fn((id: string) =>
+      Promise.resolve(
+        id === 'page'
+          ? response('page', `Before\n${unknownToken}\nAfter`, ['block-a'])
+          : response('block-a', 'Resolved'),
+      ),
+    );
+
+    const result = await retrievePageMarkdown(client(retrieveMarkdown), 'page');
+
+    expect(result.needsBlockFallback).toBe(false);
+    expect(result.markdown).toBe('Before\nResolved\nAfter');
+  });
+
+  it('<unknownfoo> を unknown block と誤認しない', async () => {
+    const retrieveMarkdown = vi.fn((id: string) =>
+      Promise.resolve(
+        id === 'page'
+          ? response('page', '<unknownfoo>\n\n<unknown url="asset"/>', [
+              'block-a',
+            ])
+          : response('block-a', 'Resolved'),
+      ),
+    );
+
+    const result = await retrievePageMarkdown(client(retrieveMarkdown), 'page');
+
+    expect(result.needsBlockFallback).toBe(false);
+    expect(result.markdown).toBe('<unknownfoo>\n\nResolved');
+  });
 });
