@@ -335,6 +335,32 @@ describe('sync E2E', () => {
     );
   });
 
+  it('MOVE先の既存ファイルを維持し実際の移動先をDBへ保存する', async () => {
+    const app = await harness([rootPage(), childPage()]);
+    await app.sync();
+    const occupiedPath = join(app.managedRoot, 'Notes', 'Renamed.md');
+    await writeFile(occupiedPath, '# Personal note\n');
+    app.setPages([rootPage(), childPage({ title: 'Renamed' })]);
+
+    await app.sync();
+
+    const fallbackPath = 'Notes/Renamed--44444444.md';
+    expect(app.store.getResource(CHILD_ID)).toMatchObject({
+      localPath: fallbackPath,
+      expectedPath: fallbackPath,
+      resolvedFilename: 'Renamed--44444444',
+    });
+    expect(await exists(join(app.managedRoot, fallbackPath))).toBe(true);
+    await expect(readFile(occupiedPath, 'utf8')).resolves.toBe(
+      '# Personal note\n',
+    );
+
+    const second = await app.sync();
+    expect(second.actions).toContainEqual(
+      expect.objectContaining({ type: 'UNCHANGED', notionId: CHILD_ID }),
+    );
+  });
+
   it('7. ページを別の親階層へMOVEする', async () => {
     const parents = [
       childPage({ id: PARENT_A_ID, title: 'Parent A' }),
@@ -840,6 +866,47 @@ describe('sync E2E', () => {
     expect(app.store.listResources()).toEqual(beforeResources);
     expect(app.store.listUnfinishedRuns()).toEqual(beforeRuns);
     expect(app.store.getLatestRun()).toBeUndefined();
+  });
+
+  it('dry-runでgrace runs到達予定のTRASHを表示して状態を変更しない', async () => {
+    const app = await harness([rootPage(), childPage()]);
+    await app.sync();
+    app.setPages([rootPage()]);
+    await app.sync();
+    const childPath = join(app.managedRoot, 'Notes', 'Child.md');
+    const before = await stat(childPath);
+    const beforeResources = app.store.listResources();
+    const beforeRun = app.store.getLatestRun();
+
+    const result = await app.sync({ dryRun: true, allowLargeTrash: true });
+
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'TRASH', notionId: CHILD_ID }),
+    );
+    expect(app.store.listResources()).toEqual(beforeResources);
+    expect(app.store.getLatestRun()).toEqual(beforeRun);
+    expect((await stat(childPath)).mtimeMs).toBe(before.mtimeMs);
+    expect(await exists(join(app.managedRoot, '.trash'))).toBe(false);
+  });
+
+  it('dry-runのTRASH安全弁停止時も状態を変更しない', async () => {
+    const app = await harness([rootPage(), childPage()]);
+    await app.sync();
+    app.setPages([rootPage()]);
+    await app.sync();
+    app.config.sync.maximum_trash_ratio = 0.01;
+    const childPath = join(app.managedRoot, 'Notes', 'Child.md');
+    const beforeResources = app.store.listResources();
+    const beforeRun = app.store.getLatestRun();
+
+    await expect(app.sync({ dryRun: true })).rejects.toThrow(
+      'trash safety limit',
+    );
+
+    expect(app.store.listResources()).toEqual(beforeResources);
+    expect(app.store.getLatestRun()).toEqual(beforeRun);
+    expect(await exists(childPath)).toBe(true);
+    expect(await exists(join(app.managedRoot, '.trash'))).toBe(false);
   });
 
   it('18. managed directory内の手書きファイルを変更しない', async () => {
