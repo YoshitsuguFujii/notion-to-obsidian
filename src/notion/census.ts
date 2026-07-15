@@ -23,6 +23,7 @@ export interface CensusWarning {
     | 'root_unavailable'
     | 'child_list_incomplete'
     | 'search_missed_resource'
+    | 'search_incomplete'
     | 'database_retrieve_failed'
     | 'multiple_data_sources';
   resourceId: string;
@@ -89,7 +90,7 @@ function rootResource(
     notionId: rootId,
     objectType: 'page',
     title: pageTitle(page),
-    ...parent(page.parent),
+    parentType: 'workspace',
     rootId,
     lastEditedTime: string(page.last_edited_time) ?? '',
     inTrash: page.in_trash === true || page.archived === true,
@@ -158,7 +159,7 @@ async function searchForMissedResources(
   client: NotionClient,
   rootId: string,
   discovered: ReadonlySet<string>,
-): Promise<CensusWarning[]> {
+): Promise<{ warnings: CensusWarning[]; searchComplete: boolean }> {
   try {
     const candidates = await fetchAllPages<unknown>((cursor) =>
       client.search(cursor),
@@ -182,9 +183,18 @@ async function searchForMissedResources(
         });
       }
     }
-    return warnings;
+    return { warnings, searchComplete: true };
   } catch {
-    return [];
+    return {
+      warnings: [
+        {
+          type: 'search_incomplete',
+          resourceId: rootId,
+          message: 'Search did not reach its final page',
+        },
+      ],
+      searchComplete: false,
+    };
   }
 }
 
@@ -219,6 +229,66 @@ export async function censusRoot(
   const queue = [rootId];
   let queueIndex = 0;
   let complete = true;
+  const visited = new Set<string>();
+
+  const addResource = async (value: unknown): Promise<boolean> => {
+    let resource = childResource(value, rootId);
+    if (!resource) return false;
+    if (discovered.has(resource.notionId)) return true;
+    discovered.add(resource.notionId);
+    if (resource.objectType === 'database') {
+      try {
+        const ids = dataSourceIds(
+          await client.retrieveDatabase(resource.notionId),
+        );
+        const dataSourceId = ids[0];
+        if (dataSourceId) resource = { ...resource, dataSourceId };
+        if (ids.length > 1) {
+          warnings.push({
+            type: 'multiple_data_sources',
+            resourceId: resource.notionId,
+            message:
+              'Database has multiple data sources; the first was selected',
+          });
+        }
+      } catch {
+        complete = false;
+        warnings.push({
+          type: 'database_retrieve_failed',
+          resourceId: resource.notionId,
+          message: 'Database metadata could not be retrieved',
+        });
+      }
+    }
+    resources.push(resource);
+    queue.push(resource.notionId);
+    return true;
+  };
+
+  const visitBlocks = async (blocks: readonly unknown[]): Promise<void> => {
+    for (const blockValue of blocks) {
+      if (await addResource(blockValue)) continue;
+      const block = record(blockValue);
+      const blockId = string(block?.id);
+      if (block?.has_children !== true || !blockId || visited.has(blockId))
+        continue;
+      visited.add(blockId);
+      try {
+        const children = await fetchAllPages<unknown>((cursor) =>
+          client.listBlockChildren(blockId, cursor),
+        );
+        await visitBlocks(children);
+      } catch {
+        complete = false;
+        warnings.push({
+          type: 'child_list_incomplete',
+          resourceId: blockId,
+          message: 'Child traversal did not reach its final page',
+        });
+      }
+    }
+  };
+
   while (queueIndex < queue.length) {
     const parentId = queue[queueIndex];
     queueIndex += 1;
@@ -227,37 +297,7 @@ export async function censusRoot(
       const children = await fetchAllPages<unknown>((cursor) =>
         client.listBlockChildren(parentId, cursor),
       );
-      for (const child of children) {
-        let resource = childResource(child, rootId);
-        if (!resource || discovered.has(resource.notionId)) continue;
-        discovered.add(resource.notionId);
-        if (resource.objectType === 'database') {
-          try {
-            const ids = dataSourceIds(
-              await client.retrieveDatabase(resource.notionId),
-            );
-            const dataSourceId = ids[0];
-            if (dataSourceId) resource = { ...resource, dataSourceId };
-            if (ids.length > 1) {
-              warnings.push({
-                type: 'multiple_data_sources',
-                resourceId: resource.notionId,
-                message:
-                  'Database has multiple data sources; the first was selected',
-              });
-            }
-          } catch {
-            complete = false;
-            warnings.push({
-              type: 'database_retrieve_failed',
-              resourceId: resource.notionId,
-              message: 'Database metadata could not be retrieved',
-            });
-          }
-        }
-        resources.push(resource);
-        queue.push(resource.notionId);
-      }
+      await visitBlocks(children);
     } catch {
       complete = false;
       warnings.push({
@@ -268,13 +308,14 @@ export async function censusRoot(
     }
   }
 
-  const searchWarnings = await searchForMissedResources(
+  const searchResult = await searchForMissedResources(
     client,
     rootId,
     discovered,
   );
-  warnings.push(...searchWarnings);
-  if (searchWarnings.length > 0) complete = false;
+  warnings.push(...searchResult.warnings);
+  if (!searchResult.searchComplete || searchResult.warnings.length > 0)
+    complete = false;
   return {
     rootId,
     status: complete ? 'complete' : 'partial',

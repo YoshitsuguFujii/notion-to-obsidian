@@ -44,6 +44,76 @@ afterEach(async () => {
 });
 
 describe('sync E2E', () => {
+  it('外部親を持つ同期ルートを最上位へ配置し親IDを保存しない', async () => {
+    const app = await harness([rootPage({ parentId: 'outside-page' })]);
+
+    await app.sync();
+
+    const markdown = await readFile(join(app.managedRoot, 'Notes.md'), 'utf8');
+    expect(markdown).toContain('notion_parent_id: null');
+    expect(app.store.getResource(ROOT_ID)?.localPath).toBe('Notes.md');
+  });
+
+  it('一般ブロック内にネストした子ページを同期する', async () => {
+    const toggleId = '77777777-7777-4777-8777-777777777777';
+    const nested = childPage({
+      title: 'Nested',
+      discoverableAsChild: false,
+      markdown: '# Nested body\n',
+    });
+    const app = await harness(
+      [
+        rootPage({
+          blocks: [
+            {
+              id: toggleId,
+              type: 'toggle',
+              toggle: {},
+              has_children: true,
+            },
+          ],
+        }),
+        nested,
+      ],
+      {
+        blockChildren: {
+          [toggleId]: [
+            {
+              id: nested.id,
+              type: 'child_page',
+              child_page: { title: nested.title },
+              parent: { type: 'page_id', page_id: ROOT_ID },
+              last_edited_time: '2026-07-12T00:00:00.000Z',
+              in_trash: false,
+            },
+          ],
+        },
+      },
+    );
+
+    await app.sync();
+
+    await expect(
+      readFile(join(app.managedRoot, 'Notes', 'Nested.md'), 'utf8'),
+    ).resolves.toContain('# Nested body');
+  });
+
+  it('Search失敗時は不在resourceをmissingまたはTRASHにしない', async () => {
+    const app = await harness([rootPage(), childPage()]);
+    await app.sync();
+    app.setPages([rootPage()]);
+    app.failSearch(true);
+
+    const result = await app.sync();
+
+    expect(result.partial).toBe(true);
+    expect(result.actions.some(({ type }) => type === 'TRASH')).toBe(false);
+    expect(app.store.getResource(CHILD_ID)).toMatchObject({
+      status: 'active',
+      missingCount: 0,
+    });
+  });
+
   it('設定した退避割合を超える場合はファイルを退避せず同期を中止する', async () => {
     const children = Array.from({ length: 10 }, (_, index) =>
       childPage({
