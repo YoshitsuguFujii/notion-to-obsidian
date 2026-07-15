@@ -46,6 +46,49 @@ obsidian:
     );
   });
 
+  it('Vault配下の深いmanaged directoryを受理する', async () => {
+    const { directory, path } = await fixture(`
+notion:
+  roots: [{ page_id: root-id, local_name: Notes }]
+obsidian: { vault_path: ./vault, managed_path: Mirror/Nested }
+`);
+
+    const config = await loadConfig(path, { NOTION_TOKEN: 'secret' });
+
+    expect(config.obsidian.managedPath).toBe(
+      join(directory, 'vault', 'Mirror', 'Nested'),
+    );
+  });
+
+  it('親ディレクトリへの脱出を含むmanaged directoryを拒否する', async () => {
+    const { path } = await fixture(`
+notion:
+  roots: [{ page_id: root-id, local_name: Notes }]
+obsidian: { vault_path: ./vault, managed_path: ../outside }
+`);
+
+    await expect(loadConfig(path, { NOTION_TOKEN: 'secret' })).rejects.toThrow(
+      /Unsafe managed path/u,
+    );
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'Windowsのパス区切りでもVault配下のmanaged directoryを受理する',
+    async () => {
+      const { directory, path } = await fixture(`
+notion:
+  roots: [{ page_id: root-id, local_name: Notes }]
+obsidian: { vault_path: ./vault, managed_path: Mirror }
+`);
+
+      const config = await loadConfig(path, { NOTION_TOKEN: 'secret' });
+
+      expect(config.obsidian.managedPath).toBe(
+        join(directory, 'vault', 'Mirror'),
+      );
+    },
+  );
+
   it('廃止した共通asset許可リスト設定を拒否する', async () => {
     const { path } = await fixture(`
 notion:

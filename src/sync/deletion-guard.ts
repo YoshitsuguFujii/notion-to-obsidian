@@ -13,7 +13,6 @@ interface MissingPlanOptions {
   root: RootCensus;
   existing: readonly StoredResource[];
   mode: SyncMode;
-  dryRun: boolean;
   graceRuns?: number;
   blockingFailure?:
     | 'root'

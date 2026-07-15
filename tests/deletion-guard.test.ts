@@ -81,24 +81,9 @@ describe('planMissingResources', () => {
         root: census(),
         existing: [resource()],
         mode: 'full',
-        dryRun: false,
         ...override,
       }),
     ).toEqual({ updates: [], trash: [] });
-  });
-
-  it('dry-runでもgrace runs到達時のmissing更新とTRASHを予測する', () => {
-    expect(
-      planMissingResources({
-        root: census(),
-        existing: [resource({ missingCount: 1 })],
-        mode: 'full',
-        dryRun: true,
-      }),
-    ).toEqual({
-      updates: [{ notionId: 'page-id', missingCount: 2 }],
-      trash: [{ notionId: 'page-id', reason: 'confirmed_not_found' }],
-    });
   });
 
   it('1回目の missing は count の更新だけを計画する', () => {
@@ -107,7 +92,6 @@ describe('planMissingResources', () => {
         root: census(),
         existing: [resource()],
         mode: 'full',
-        dryRun: false,
       }),
     ).toEqual({
       updates: [{ notionId: 'page-id', missingCount: 1 }],
@@ -121,7 +105,6 @@ describe('planMissingResources', () => {
         root: census(),
         existing: [resource({ missingCount: 1 })],
         mode: 'full',
-        dryRun: false,
       }),
     ).toEqual({
       updates: [{ notionId: 'page-id', missingCount: 2 }],
@@ -136,7 +119,6 @@ describe('planMissingResources', () => {
         root: census({ resources: [{ notionId: 'page-id' } as never] }),
         existing: [seen],
         mode: 'full',
-        dryRun: false,
       }),
     ).toEqual({
       updates: [{ notionId: 'page-id', missingCount: 0 }],
@@ -151,7 +133,6 @@ describe('planMissingResources', () => {
         root: census({ resources: [trashed] }),
         existing: [resource()],
         mode: 'full',
-        dryRun: false,
       }),
     ).toEqual({
       updates: [{ notionId: 'page-id', missingCount: 1 }],
@@ -166,7 +147,6 @@ describe('planMissingResources', () => {
         root: census({ resources: [trashed] }),
         existing: [resource({ missingCount: 1 })],
         mode: 'full',
-        dryRun: false,
       }),
     ).toEqual({
       updates: [{ notionId: 'page-id', missingCount: 2 }],
@@ -180,7 +160,6 @@ describe('planMissingResources', () => {
         root: census(),
         existing: [resource()],
         mode: 'full',
-        dryRun: false,
         confirmedReasons: new Map([['page-id', 'moved_out_of_scope']]),
       }).trash,
     ).toEqual([{ notionId: 'page-id', reason: 'moved_out_of_scope' }]);

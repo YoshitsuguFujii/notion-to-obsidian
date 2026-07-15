@@ -1,6 +1,6 @@
 import { access, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { parse } from 'yaml';
 import { z } from 'zod';
 import { DomainError } from '../errors.js';
@@ -196,11 +196,16 @@ export async function loadConfig(
   const managedPath = isAbsolute(rawManaged)
     ? expandPath(rawManaged, base)
     : resolve(vaultPath, rawManaged);
+  const managedRelativePath = relative(vaultPath, managedPath);
+  const managedPathIsDescendant =
+    managedRelativePath !== '' &&
+    !managedRelativePath.startsWith('..') &&
+    !isAbsolute(managedRelativePath);
   if (
     managedPath === vaultPath ||
     managedPath === resolve('/') ||
     managedPath === resolve(homedir()) ||
-    !managedPath.startsWith(`${vaultPath}/`)
+    !managedPathIsDescendant
   ) {
     throw new DomainError('safety', 'Unsafe managed path');
   }
