@@ -1,8 +1,27 @@
+# OS / editor local
 .DS_Store
+
+# Real environment config (never commit; use *.example instead)
 .env
+.env.*
+!.env.example
+config.yaml
+config.local.yaml
+
+# Runtime state
 .state/
+*.db
+*.db-wal
+*.db-shm
+*.lock
 *.log
+
+# Build output
 coverage/
 dist/
 node_modules/
+
+# AI agent local state
 .steering/
+.claude/settings.local.json
+.codex/
