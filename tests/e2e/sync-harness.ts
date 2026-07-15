@@ -9,6 +9,7 @@ import type {
 import type { AppConfig } from '../../src/config/index.js';
 import { retrieveBlockTree } from '../../src/notion/blocks.js';
 import { censusRoot } from '../../src/notion/census.js';
+import { fetchDataSourceRows } from '../../src/notion/data-sources.js';
 import { retrieveMarkdownWithFallback } from '../../src/notion/markdown.js';
 import type { NotionClient } from '../../src/notion/types.js';
 import { SqliteStateStore } from '../../src/storage/sqlite-store.js';
@@ -35,6 +36,13 @@ export interface MockPage {
   blocks?: Array<Record<string, unknown>>;
   markdownTruncated?: boolean;
   unknownBlockIds?: string[];
+}
+
+interface MockDataSource {
+  id: string;
+  name: string;
+  databaseId: string;
+  rows: MockPage[];
 }
 
 function cursorPage(results: unknown[]) {
@@ -77,6 +85,7 @@ export async function createSyncHarness(
   initialPages: MockPage[],
   harnessOptions: {
     downloadAsset?: (request: DownloadRequest) => Promise<DownloadResult>;
+    dataSources?: MockDataSource[];
   } = {},
 ): Promise<SyncHarness> {
   const vault = await mkdtemp(join(tmpdir(), 'notion-e2e-'));
@@ -96,8 +105,21 @@ export async function createSyncHarness(
             Object.assign(new Error('not found'), { status: 404 }),
           );
     }),
+    retrieveDatabase: vi.fn((databaseId: string) => {
+      const dataSources = (harnessOptions.dataSources ?? []).filter(
+        (dataSource) => dataSource.databaseId === databaseId,
+      );
+      return Promise.resolve({
+        id: databaseId,
+        data_sources: dataSources.map(({ id, name }) => ({ id, name })),
+      });
+    }),
     retrieveMarkdown: vi.fn((pageId: string) => {
-      const page = pages.get(pageId);
+      const page =
+        pages.get(pageId) ??
+        harnessOptions.dataSources
+          ?.flatMap(({ rows }) => rows)
+          .find(({ id }) => id === pageId);
       return page
         ? Promise.resolve({
             markdown: page.markdown ?? `# ${page.title}\n`,
@@ -125,7 +147,12 @@ export async function createSyncHarness(
         cursorPage([...children, ...(pages.get(parentId)?.blocks ?? [])]),
       );
     }),
-    queryDataSource: vi.fn(() => Promise.resolve(cursorPage([]))),
+    queryDataSource: vi.fn((dataSourceId: string) => {
+      const rows =
+        harnessOptions.dataSources?.find(({ id }) => id === dataSourceId)
+          ?.rows ?? [];
+      return Promise.resolve(cursorPage(rows.map(pageResponse)));
+    }),
     search: vi.fn(() => Promise.resolve(cursorPage([]))),
   };
   const config: AppConfig = {
@@ -179,6 +206,8 @@ export async function createSyncHarness(
         retrieveContent: (pageId) =>
           retrieveMarkdownWithFallback(client, pageId),
         retrieveBlocks: (pageId) => retrieveBlockTree(client, pageId),
+        fetchDataSourceRows: (dataSourceId) =>
+          fetchDataSourceRows(client, dataSourceId),
         downloadAsset:
           harnessOptions.downloadAsset ??
           (async ({ destination }) => {

@@ -12,6 +12,7 @@ function client(
   return {
     queryDataSource,
     retrievePage: vi.fn(),
+    retrieveDatabase: vi.fn(),
     retrieveMarkdown: vi.fn(),
     listBlockChildren: vi.fn(),
     search: vi.fn(),

@@ -416,6 +416,57 @@ describe('sync E2E', () => {
     expect(app.store.listAssets()).toHaveLength(1);
   });
 
+  it('child databaseをData Sourceのindexと行ページへ同期する', async () => {
+    const databaseId = '77777777-7777-4777-8777-777777777777';
+    const dataSourceId = '88888888-8888-4888-8888-888888888888';
+    const rowId = '99999999-9999-4999-8999-999999999999';
+    const app = await harness(
+      [
+        rootPage({
+          blocks: [
+            {
+              id: databaseId,
+              type: 'child_database',
+              child_database: { title: 'Tasks' },
+              parent: { type: 'page_id', page_id: ROOT_ID },
+              last_edited_time: '2026-07-12T00:00:00.000Z',
+              in_trash: false,
+            },
+          ],
+        }),
+      ],
+      {
+        dataSources: [
+          {
+            id: dataSourceId,
+            name: 'Tasks',
+            databaseId,
+            rows: [
+              {
+                id: rowId,
+                title: 'First task',
+                parentId: databaseId,
+                markdown: '# Task body\n',
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    await app.sync();
+
+    await expect(
+      readFile(join(app.managedRoot, 'Notes', 'Tasks', '_index.md'), 'utf8'),
+    ).resolves.toContain('First task');
+    await expect(
+      readFile(
+        join(app.managedRoot, 'Notes', 'Tasks', 'First task.md'),
+        'utf8',
+      ),
+    ).resolves.toContain('# Task body');
+  });
+
   it('許可外のContent-Typeを返すアセットは保存せずリモート参照を維持する', async () => {
     const assetUrl = 'https://files.example/photo.png';
     const blockId = '77777777-7777-4777-8777-777777777777';

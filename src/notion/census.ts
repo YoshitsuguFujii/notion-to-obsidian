@@ -19,7 +19,12 @@ export interface CensusResource {
 }
 
 export interface CensusWarning {
-  type: 'root_unavailable' | 'child_list_incomplete' | 'search_missed_resource';
+  type:
+    | 'root_unavailable'
+    | 'child_list_incomplete'
+    | 'search_missed_resource'
+    | 'database_retrieve_failed'
+    | 'multiple_data_sources';
   resourceId: string;
   message: string;
 }
@@ -106,11 +111,6 @@ function childResource(
   )
     return undefined;
   const child = record(block[type]);
-  const dataSources = record(block.child_database)?.data_sources;
-  const firstDataSource = Array.isArray(dataSources)
-    ? record(dataSources[0])
-    : undefined;
-  const dataSourceId = string(firstDataSource?.id);
   return {
     notionId,
     objectType: type === 'child_page' ? 'page' : 'database',
@@ -120,8 +120,16 @@ function childResource(
     lastEditedTime: string(block.last_edited_time) ?? '',
     inTrash: block.in_trash === true || block.archived === true,
     url: string(block.url) ?? '',
-    ...(dataSourceId ? { dataSourceId } : {}),
   };
+}
+
+function dataSourceIds(value: unknown): string[] {
+  const dataSources = record(value)?.data_sources;
+  if (!Array.isArray(dataSources)) return [];
+  return dataSources.flatMap((dataSource) => {
+    const id = string(record(dataSource)?.id);
+    return id ? [id] : [];
+  });
 }
 
 async function reachesRoot(
@@ -220,9 +228,33 @@ export async function censusRoot(
         client.listBlockChildren(parentId, cursor),
       );
       for (const child of children) {
-        const resource = childResource(child, rootId);
+        let resource = childResource(child, rootId);
         if (!resource || discovered.has(resource.notionId)) continue;
         discovered.add(resource.notionId);
+        if (resource.objectType === 'database') {
+          try {
+            const ids = dataSourceIds(
+              await client.retrieveDatabase(resource.notionId),
+            );
+            const dataSourceId = ids[0];
+            if (dataSourceId) resource = { ...resource, dataSourceId };
+            if (ids.length > 1) {
+              warnings.push({
+                type: 'multiple_data_sources',
+                resourceId: resource.notionId,
+                message:
+                  'Database has multiple data sources; the first was selected',
+              });
+            }
+          } catch {
+            complete = false;
+            warnings.push({
+              type: 'database_retrieve_failed',
+              resourceId: resource.notionId,
+              message: 'Database metadata could not be retrieved',
+            });
+          }
+        }
         resources.push(resource);
         queue.push(resource.notionId);
       }

@@ -8,6 +8,7 @@ function client(
   return {
     retrieveMarkdown,
     retrievePage: vi.fn(),
+    retrieveDatabase: vi.fn(),
     listBlockChildren: vi.fn(),
     queryDataSource: vi.fn(),
     search: vi.fn(),
