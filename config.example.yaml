@@ -3,7 +3,8 @@ notion:
   roots:
     # Each page must belong to exactly one root, so that no page is processed
     # twice. A duplicate page_id is rejected when the config is loaded; a root
-    # nested under another root stops the sync once the hierarchy is known.
+    # nested under another root stops plan and sync, once the Notion hierarchy
+    # reveals the overlap.
     # Required. Stable UUID of a root page shared with the Integration.
     - page_id: '00000000-0000-0000-0000-000000000000'
       # Required. Local filename/directory label used for this root.
