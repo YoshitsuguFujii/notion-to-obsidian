@@ -304,17 +304,17 @@ export async function runSyncOrchestrator(
       pathCensuses.push({ ...result, resources: pathExpanded });
     }
 
-    const ownerByNotionId = new Map<string, string>();
+    const rootIdByNotionId = new Map<string, string>();
     for (const census of pathCensuses) {
       for (const resource of census.resources) {
-        const firstRootId = ownerByNotionId.get(resource.notionId);
+        const firstRootId = rootIdByNotionId.get(resource.notionId);
         if (firstRootId && firstRootId !== census.rootId) {
           throw new DomainError(
             'validation',
             `Sync cannot continue because Notion page ID ${resource.notionId} belongs to configured roots ${firstRootId} and ${census.rootId}. Remove overlapping roots from notion.roots so each page belongs to one root`,
           );
         }
-        ownerByNotionId.set(resource.notionId, census.rootId);
+        rootIdByNotionId.set(resource.notionId, census.rootId);
       }
     }
 
