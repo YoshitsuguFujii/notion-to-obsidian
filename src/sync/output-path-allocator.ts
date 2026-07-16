@@ -79,30 +79,32 @@ export async function allocateOutputPaths(
     let allocatedPath = expectedPath;
 
     if (currentPath && currentPath !== expectedPath) {
+      const expectedKey = outputPathCollisionKey(expectedPath);
       const targetCollision =
         belongsToAnotherResource(
           originalOwners,
-          outputPathCollisionKey(expectedPath),
+          expectedKey,
           planned.notionId,
         ) ||
         belongsToAnotherResource(
           assignedOwners,
-          outputPathCollisionKey(expectedPath),
+          expectedKey,
           planned.notionId,
         ) ||
         (await isLocalCollision(expectedPath, currentPath));
 
       if (targetCollision) {
         allocatedPath = collisionPath(expectedPath, planned.notionId);
+        const allocatedKey = outputPathCollisionKey(allocatedPath);
         const fallbackCollision =
           belongsToAnotherResource(
             originalOwners,
-            outputPathCollisionKey(allocatedPath),
+            allocatedKey,
             planned.notionId,
           ) ||
           belongsToAnotherResource(
             assignedOwners,
-            outputPathCollisionKey(allocatedPath),
+            allocatedKey,
             planned.notionId,
           ) ||
           (await isLocalCollision(allocatedPath, currentPath));
