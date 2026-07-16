@@ -233,19 +233,8 @@ export async function runSyncOrchestrator(
     >();
     const rowProperties = new Map<string, Record<string, unknown>>();
     const seenDataSources = new Set<string>();
-    const configuredRootByResourceId = new Map<string, string>();
     for (const root of selectedRoots) {
       const result = await dependencies.census(root.pageId);
-      for (const resource of result.resources) {
-        const firstRootId = configuredRootByResourceId.get(resource.notionId);
-        if (firstRootId && firstRootId !== root.pageId) {
-          throw new DomainError(
-            'validation',
-            `Notion page ID ${resource.notionId} appears in configured roots ${firstRootId} and ${root.pageId}. Remove one overlapping root from notion.roots`,
-          );
-        }
-        configuredRootByResourceId.set(resource.notionId, root.pageId);
-      }
       const pathResources = result.resources.map((resource) =>
         resource.notionId === root.pageId
           ? { ...resource, title: root.localName }
@@ -313,6 +302,20 @@ export async function runSyncOrchestrator(
       }
       censuses.push({ ...result, resources: expanded });
       pathCensuses.push({ ...result, resources: pathExpanded });
+    }
+
+    const ownerByNotionId = new Map<string, string>();
+    for (const census of censuses) {
+      for (const resource of census.resources) {
+        const firstRootId = ownerByNotionId.get(resource.notionId);
+        if (firstRootId && firstRootId !== census.rootId) {
+          throw new DomainError(
+            'validation',
+            `Sync cannot continue because Notion page ID ${resource.notionId} belongs to configured roots ${firstRootId} and ${census.rootId}. Remove overlapping roots from notion.roots so each page belongs to one root`,
+          );
+        }
+        ownerByNotionId.set(resource.notionId, census.rootId);
+      }
     }
 
     const existing = dependencies.store.listResources();

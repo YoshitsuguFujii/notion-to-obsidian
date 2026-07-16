@@ -56,6 +56,51 @@ describe('sync E2E', () => {
     );
   });
 
+  it('Data Source行を別の同期ルートに指定した構成を重複ページと対処方法を示して拒否する', async () => {
+    const databaseId = '77777777-7777-4777-8777-777777777777';
+    const dataSourceId = '88888888-8888-4888-8888-888888888888';
+    const rowRoot = {
+      id: ROOT_B_ID,
+      title: 'Row root',
+      markdown: '# Row root\n',
+    };
+    const app = await harness(
+      [
+        rootPage({
+          blocks: [
+            {
+              id: databaseId,
+              type: 'child_database',
+              child_database: { title: 'Tasks' },
+              parent: { type: 'page_id', page_id: ROOT_ID },
+              last_edited_time: '2026-07-12T00:00:00.000Z',
+              in_trash: false,
+            },
+          ],
+        }),
+        rowRoot,
+      ],
+      {
+        dataSources: [
+          {
+            id: dataSourceId,
+            name: 'Tasks',
+            databaseId,
+            rows: [{ ...rowRoot, parentId: databaseId }],
+          },
+        ],
+      },
+    );
+    app.config.notion.roots = [
+      { pageId: ROOT_ID, localName: 'Notes' },
+      { pageId: ROOT_B_ID, localName: 'Row root' },
+    ];
+
+    await expect(app.sync()).rejects.toThrow(
+      new RegExp(`${ROOT_B_ID}.*${ROOT_ID}.*${ROOT_B_ID}.*Remove`, 'u'),
+    );
+  });
+
   it('外部親を持つ同期ルートを最上位へ配置し親IDを保存しない', async () => {
     const app = await harness([rootPage({ parentId: 'outside-page' })]);
 
