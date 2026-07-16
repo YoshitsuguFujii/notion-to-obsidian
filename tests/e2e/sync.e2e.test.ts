@@ -56,6 +56,22 @@ describe('sync E2E', () => {
     );
   });
 
+  it('重複と無関係なページだけを同期する場合も親子関係にある同期ルートを拒否する', async () => {
+    const app = await harness([
+      rootPage(),
+      childPage(),
+      childPage({ id: SIBLING_ID, title: 'Sibling' }),
+    ]);
+    app.config.notion.roots = [
+      { pageId: ROOT_ID, localName: 'Notes' },
+      { pageId: CHILD_ID, localName: 'Child root' },
+    ];
+
+    await expect(app.sync({ pageId: SIBLING_ID })).rejects.toThrow(
+      new RegExp(`${CHILD_ID}.*${ROOT_ID}.*${CHILD_ID}.*Remove`, 'u'),
+    );
+  });
+
   it('Data Source行を別の同期ルートに指定した構成を重複ページと対処方法を示して拒否する', async () => {
     const databaseId = '77777777-7777-4777-8777-777777777777';
     const dataSourceId = '88888888-8888-4888-8888-888888888888';

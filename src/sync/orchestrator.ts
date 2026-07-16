@@ -305,7 +305,7 @@ export async function runSyncOrchestrator(
     }
 
     const ownerByNotionId = new Map<string, string>();
-    for (const census of censuses) {
+    for (const census of pathCensuses) {
       for (const resource of census.resources) {
         const firstRootId = ownerByNotionId.get(resource.notionId);
         if (firstRootId && firstRootId !== census.rootId) {
