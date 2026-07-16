@@ -232,7 +232,10 @@ export async function runSyncOrchestrator(
       Array<{ notionId: string; properties: Record<string, unknown> }>
     >();
     const rowProperties = new Map<string, Record<string, unknown>>();
-    const seenDataSources = new Set<string>();
+    const rowsByDataSourceId = new Map<
+      string,
+      Array<Record<string, unknown>>
+    >();
     for (const root of selectedRoots) {
       const result = await dependencies.census(root.pageId);
       const pathResources = result.resources.map((resource) =>
@@ -240,23 +243,19 @@ export async function runSyncOrchestrator(
           ? { ...resource, title: root.localName }
           : resource,
       );
-      const resources = pathResources.filter(
-        (resource) => !options.pageId || resource.notionId === options.pageId,
-      );
-      const expanded = [...resources];
       const pathExpanded = [...pathResources];
-      for (const resource of resources) {
+      for (const resource of pathResources) {
         if (
           resource.objectType !== 'database' ||
           !resource.dataSourceId ||
-          seenDataSources.has(resource.dataSourceId) ||
           !dependencies.fetchDataSourceRows
         )
           continue;
-        seenDataSources.add(resource.dataSourceId);
-        const rows = await dependencies.fetchDataSourceRows(
-          resource.dataSourceId,
-        );
+        let rows = rowsByDataSourceId.get(resource.dataSourceId);
+        if (!rows) {
+          rows = await dependencies.fetchDataSourceRows(resource.dataSourceId);
+          rowsByDataSourceId.set(resource.dataSourceId, rows);
+        }
         const indexedRows: Array<{
           notionId: string;
           properties: Record<string, unknown>;
@@ -293,13 +292,15 @@ export async function runSyncOrchestrator(
             inTrash: row.in_trash === true || row.archived === true,
             url: typeof row.url === 'string' ? row.url : '',
           };
-          expanded.push(expandedRow);
           pathExpanded.push(expandedRow);
           rowProperties.set(notionId, properties);
           indexedRows.push({ notionId, properties });
         }
         dataSourceRows.set(resource.notionId, indexedRows);
       }
+      const expanded = pathExpanded.filter(
+        (resource) => !options.pageId || resource.notionId === options.pageId,
+      );
       censuses.push({ ...result, resources: expanded });
       pathCensuses.push({ ...result, resources: pathExpanded });
     }
