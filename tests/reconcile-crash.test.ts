@@ -160,12 +160,17 @@ describe('reconcileCrash', () => {
     expect(await readFile(join(root, 'User-note.md'), 'utf8')).toBe(malformed);
   });
 
-  it('old/new両方があればnewを正として管理下のoldだけを掃除する', async () => {
+  it('MOVEの移動元と移動先が残っていれば移動先へDBを合わせて移動元を掃除する', async () => {
     const { root, store } = await fixture({ expectedPath: 'New/Page.md' });
     await put(root, 'Old/Page.md');
     await put(root, 'New/Page.md');
     const findings = (await reconcileCrash({ managedRoot: root, store }))
       .findings;
+    expect(findings).toContainEqual({
+      type: 'move_relinked',
+      notionId,
+      path: 'New/Page.md',
+    });
     expect(findings).toContainEqual({
       type: 'duplicate_removed',
       notionId,

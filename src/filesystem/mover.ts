@@ -1,15 +1,16 @@
 import {
   access,
   copyFile as nodeCopyFile,
+  link as nodeLink,
   lstat,
   mkdir,
   readFile,
   readdir,
-  rename as nodeRename,
   rm,
   rmdir,
   unlink as nodeUnlink,
 } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DomainError, InfraError } from '../errors.js';
 import { assertNoSymlinkEscape, joinManagedPath } from './safe-path.js';
@@ -24,7 +25,8 @@ interface MoveOptions {
   targetPath: string;
   stored: StoredManagementRecord;
   rename?: (from: string, to: string) => Promise<void>;
-  copyFile?: (from: string, to: string) => Promise<void>;
+  link?: (existingPath: string, newPath: string) => Promise<void>;
+  copyFile?: (from: string, to: string, mode?: number) => Promise<void>;
   unlink?: (path: string) => Promise<void>;
   onMoved?: (targetPath: string) => void | Promise<void>;
 }
@@ -44,6 +46,26 @@ const inspector = {
     }
   },
 };
+
+const copyFallbackCodes = new Set([
+  'EXDEV',
+  'ENOTSUP',
+  'EOPNOTSUPP',
+  'EPERM',
+  'EMLINK',
+]);
+
+function errorCode(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException).code;
+}
+
+function targetExistsError(cause: unknown): DomainError {
+  return new DomainError(
+    'safety',
+    'Move target already exists; run plan again before syncing',
+    { cause },
+  );
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -94,20 +116,29 @@ export async function moveManagedFile(
 
   try {
     try {
-      await (options.rename ?? nodeRename)(source, target);
-    } catch {
+      await (options.link ?? nodeLink)(source, target);
+    } catch (linkCause) {
+      if (errorCode(linkCause) === 'EEXIST') throw targetExistsError(linkCause);
+      if (!copyFallbackCodes.has(errorCode(linkCause) ?? '')) throw linkCause;
       try {
-        await (options.copyFile ?? nodeCopyFile)(source, target);
-        await (options.unlink ?? nodeUnlink)(source);
-      } catch (fallbackCause) {
+        await (options.copyFile ?? nodeCopyFile)(
+          source,
+          target,
+          constants.COPYFILE_EXCL,
+        );
+      } catch (copyCause) {
+        if (errorCode(copyCause) === 'EEXIST')
+          throw targetExistsError(copyCause);
         await rm(target, { force: true });
-        throw fallbackCause;
+        throw copyCause;
       }
     }
+    await (options.unlink ?? nodeUnlink)(source);
     await options.onMoved?.(targetPath);
     await removeEmptyParent(options.managedRoot, source);
     return { moved: true, targetPath };
   } catch (cause) {
+    if (cause instanceof DomainError) throw cause;
     const message = cause instanceof Error ? cause.message : 'unknown error';
     throw new InfraError('storage', `Managed move failed: ${message}`, {
       cause,
