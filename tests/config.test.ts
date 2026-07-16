@@ -60,6 +60,37 @@ obsidian: { vault_path: ./vault, managed_path: Mirror/Nested }
     );
   });
 
+  it('異なるpage IDを持つ複数の同期ルートを受理する', async () => {
+    const { path } = await fixture(`
+notion:
+  roots:
+    - { page_id: root-a, local_name: Notes A }
+    - { page_id: root-b, local_name: Notes B }
+obsidian: { vault_path: ./vault, managed_path: Mirror }
+`);
+
+    const config = await loadConfig(path, { NOTION_TOKEN: 'secret' });
+
+    expect(config.notion.roots).toEqual([
+      { pageId: 'root-a', localName: 'Notes A' },
+      { pageId: 'root-b', localName: 'Notes B' },
+    ]);
+  });
+
+  it('同じpage IDを持つ同期ルートを拒否する', async () => {
+    const { path } = await fixture(`
+notion:
+  roots:
+    - { page_id: duplicate-root, local_name: Notes A }
+    - { page_id: duplicate-root, local_name: Notes B }
+obsidian: { vault_path: ./vault, managed_path: Mirror }
+`);
+
+    await expect(loadConfig(path, { NOTION_TOKEN: 'secret' })).rejects.toThrow(
+      /duplicate-root/u,
+    );
+  });
+
   it('親ディレクトリへの脱出を含むmanaged directoryを拒否する', async () => {
     const { path } = await fixture(`
 notion:

@@ -402,6 +402,52 @@ describe('censusRoot', () => {
     );
   });
 
+  it('Search候補の親を取得できないcensusをpartialとして削除判定を許可しない', async () => {
+    const retrievePage = vi.fn((id: string) =>
+      id === 'root'
+        ? Promise.resolve(rootPage)
+        : Promise.reject(new Error('service unavailable')),
+    );
+    const search = vi.fn().mockResolvedValue({
+      results: [{ object: 'page', id: 'unknown-descendant' }],
+      has_more: false,
+      next_cursor: null,
+    });
+
+    const result = await censusRoot(client({ retrievePage, search }), 'root');
+
+    expect(result).toMatchObject({
+      status: 'partial',
+      deletionAllowed: false,
+    });
+  });
+
+  it('Search候補の親チェーンが循環するcensusをpartialとして削除判定を許可しない', async () => {
+    const retrievePage = vi.fn((id: string) => {
+      if (id === 'root') return Promise.resolve(rootPage);
+      return Promise.resolve({
+        object: 'page',
+        id,
+        parent: {
+          type: 'page_id',
+          page_id: id === 'loop-a' ? 'loop-b' : 'loop-a',
+        },
+      });
+    });
+    const search = vi.fn().mockResolvedValue({
+      results: [{ object: 'page', id: 'loop-a' }],
+      has_more: false,
+      next_cursor: null,
+    });
+
+    const result = await censusRoot(client({ retrievePage, search }), 'root');
+
+    expect(result).toMatchObject({
+      status: 'partial',
+      deletionAllowed: false,
+    });
+  });
+
   it('Search 候補の parent chain が別 root で終わる場合は判断根拠にしない', async () => {
     const retrievePage = vi.fn((id: string) =>
       Promise.resolve(
