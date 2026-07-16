@@ -232,10 +232,7 @@ export async function runSyncOrchestrator(
       Array<{ notionId: string; properties: Record<string, unknown> }>
     >();
     const rowProperties = new Map<string, Record<string, unknown>>();
-    const rowsByDataSourceId = new Map<
-      string,
-      Array<Record<string, unknown>>
-    >();
+    const seenDataSources = new Set<string>();
     for (const root of selectedRoots) {
       const result = await dependencies.census(root.pageId);
       const pathResources = result.resources.map((resource) =>
@@ -248,14 +245,14 @@ export async function runSyncOrchestrator(
         if (
           resource.objectType !== 'database' ||
           !resource.dataSourceId ||
+          seenDataSources.has(resource.dataSourceId) ||
           !dependencies.fetchDataSourceRows
         )
           continue;
-        let rows = rowsByDataSourceId.get(resource.dataSourceId);
-        if (!rows) {
-          rows = await dependencies.fetchDataSourceRows(resource.dataSourceId);
-          rowsByDataSourceId.set(resource.dataSourceId, rows);
-        }
+        seenDataSources.add(resource.dataSourceId);
+        const rows = await dependencies.fetchDataSourceRows(
+          resource.dataSourceId,
+        );
         const indexedRows: Array<{
           notionId: string;
           properties: Record<string, unknown>;
@@ -318,6 +315,11 @@ export async function runSyncOrchestrator(
         rootIdByNotionId.set(resource.notionId, census.rootId);
       }
     }
+    const pathResourceById = new Map(
+      pathCensuses.flatMap((census) =>
+        census.resources.map((resource) => [resource.notionId, resource]),
+      ),
+    );
 
     const existing = dependencies.store.listResources();
     const existingAssets = dependencies.store.listAssets();
@@ -398,9 +400,7 @@ export async function runSyncOrchestrator(
               ),
               rows: indexedRows.flatMap(({ notionId }) => {
                 const rowPath = pathById.get(notionId);
-                const rowResource = census.resources.find(
-                  (candidate) => candidate.notionId === notionId,
-                );
+                const rowResource = pathResourceById.get(notionId);
                 return rowPath && rowResource
                   ? [{ title: rowResource.title, path: rowPath.expectedPath }]
                   : [];

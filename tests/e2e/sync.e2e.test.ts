@@ -703,6 +703,119 @@ describe('sync E2E', () => {
     ).resolves.toContain('# Task body');
   });
 
+  it('Data Sourceのdatabase IDを指定してもindexに行一覧を出力する', async () => {
+    const databaseId = '77777777-7777-4777-8777-777777777777';
+    const dataSourceId = '88888888-8888-4888-8888-888888888888';
+    const rowId = '99999999-9999-4999-8999-999999999999';
+    const app = await harness(
+      [
+        rootPage({
+          blocks: [
+            {
+              id: databaseId,
+              type: 'child_database',
+              child_database: { title: 'Tasks' },
+              parent: { type: 'page_id', page_id: ROOT_ID },
+              last_edited_time: '2026-07-12T00:00:00.000Z',
+              in_trash: false,
+            },
+          ],
+        }),
+      ],
+      {
+        dataSources: [
+          {
+            id: dataSourceId,
+            name: 'Tasks',
+            databaseId,
+            rows: [
+              {
+                id: rowId,
+                title: 'First task',
+                parentId: databaseId,
+                markdown: '# Task body\n',
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    await app.sync({ pageId: databaseId });
+
+    await expect(
+      readFile(join(app.managedRoot, 'Notes', 'Tasks', '_index.md'), 'utf8'),
+    ).resolves.toContain('First task');
+  });
+
+  it('複数のdatabaseが同じData Sourceを参照しても行を初出のdatabaseに一度だけ同期する', async () => {
+    const databaseId = '77777777-7777-4777-8777-777777777777';
+    const linkedDatabaseId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const dataSourceId = '88888888-8888-4888-8888-888888888888';
+    const rowId = '99999999-9999-4999-8999-999999999999';
+    const row = {
+      id: rowId,
+      title: 'First task',
+      parentId: databaseId,
+      markdown: '# Task body\n',
+    };
+    const app = await harness(
+      [
+        rootPage({
+          blocks: [
+            {
+              id: databaseId,
+              type: 'child_database',
+              child_database: { title: 'Tasks' },
+              parent: { type: 'page_id', page_id: ROOT_ID },
+              last_edited_time: '2026-07-12T00:00:00.000Z',
+              in_trash: false,
+            },
+            {
+              id: linkedDatabaseId,
+              type: 'child_database',
+              child_database: { title: 'Linked tasks' },
+              parent: { type: 'page_id', page_id: ROOT_ID },
+              last_edited_time: '2026-07-12T00:00:00.000Z',
+              in_trash: false,
+            },
+          ],
+        }),
+        {
+          id: linkedDatabaseId,
+          title: 'Linked tasks',
+          markdown: '# Linked tasks\n',
+        },
+      ],
+      {
+        dataSources: [
+          { id: dataSourceId, name: 'Tasks', databaseId, rows: [row] },
+          {
+            id: dataSourceId,
+            name: 'Tasks',
+            databaseId: linkedDatabaseId,
+            rows: [row],
+          },
+        ],
+      },
+    );
+
+    await app.sync();
+
+    await expect(
+      readFile(
+        join(app.managedRoot, 'Notes', 'Tasks', 'First task.md'),
+        'utf8',
+      ),
+    ).resolves.toContain('# Task body');
+    expect(app.store.getResource(rowId)?.localPath).toBe(
+      'Notes/Tasks/First task.md',
+    );
+    await expect(
+      access(join(app.managedRoot, 'Notes', 'Linked tasks', 'First task.md')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('Data Source行のpage IDを指定して行ページだけを同期する', async () => {
     const databaseId = '77777777-7777-4777-8777-777777777777';
     const dataSourceId = '88888888-8888-4888-8888-888888888888';
