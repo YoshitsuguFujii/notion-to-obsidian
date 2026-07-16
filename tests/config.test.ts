@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, parse, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config/index.js';
 
@@ -60,6 +60,20 @@ obsidian: { vault_path: ./vault, managed_path: Mirror/Nested }
     );
   });
 
+  it('先頭がドット2つのVault内managed directoryを受理する', async () => {
+    const { directory, path } = await fixture(`
+notion:
+  roots: [{ page_id: root-id, local_name: Notes }]
+obsidian: { vault_path: ./vault, managed_path: ..archive }
+`);
+
+    const config = await loadConfig(path, { NOTION_TOKEN: 'secret' });
+
+    expect(config.obsidian.managedPath).toBe(
+      join(directory, 'vault', '..archive'),
+    );
+  });
+
   it('異なるpage IDを持つ複数の同期ルートを受理する', async () => {
     const { path } = await fixture(`
 notion:
@@ -91,17 +105,61 @@ obsidian: { vault_path: ./vault, managed_path: Mirror }
     );
   });
 
-  it('親ディレクトリへの脱出を含むmanaged directoryを拒否する', async () => {
-    const { path } = await fixture(`
+  it.each(['..', '../outside'])(
+    '親ディレクトリへ脱出するmanaged directory %sを拒否する',
+    async (managedPath) => {
+      const { path } = await fixture(`
 notion:
   roots: [{ page_id: root-id, local_name: Notes }]
-obsidian: { vault_path: ./vault, managed_path: ../outside }
+obsidian:
+  vault_path: ./vault
+  managed_path: ${JSON.stringify(managedPath)}
 `);
+
+      await expect(
+        loadConfig(path, { NOTION_TOKEN: 'secret' }),
+      ).rejects.toThrow(/Unsafe managed path/u);
+    },
+  );
+
+  it('Vault外の絶対managed directoryを拒否する', async () => {
+    const { directory, path } = await fixture(`
+notion:
+  roots: [{ page_id: root-id, local_name: Notes }]
+obsidian: { vault_path: ./vault, managed_path: Mirror }
+`);
+    const outsidePath = resolve(directory, 'outside');
+    await writeFile(
+      path,
+      `notion: { roots: [{ page_id: root-id, local_name: Notes }] }\nobsidian: { vault_path: ./vault, managed_path: ${JSON.stringify(outsidePath)} }`,
+    );
 
     await expect(loadConfig(path, { NOTION_TOKEN: 'secret' })).rejects.toThrow(
       /Unsafe managed path/u,
     );
   });
+
+  it.runIf(process.platform === 'win32')(
+    'Vaultと異なるドライブの絶対managed directoryを拒否する',
+    async () => {
+      const { directory, path } = await fixture(`
+notion:
+  roots: [{ page_id: root-id, local_name: Notes }]
+obsidian: { vault_path: ./vault, managed_path: Mirror }
+`);
+      const vaultDrive = parse(directory).root.slice(0, 1).toUpperCase();
+      const otherDrive = vaultDrive === 'C' ? 'D' : 'C';
+      const outsidePath = `${otherDrive}:\\outside`;
+      await writeFile(
+        path,
+        `notion: { roots: [{ page_id: root-id, local_name: Notes }] }\nobsidian: { vault_path: ./vault, managed_path: ${JSON.stringify(outsidePath)} }`,
+      );
+
+      await expect(
+        loadConfig(path, { NOTION_TOKEN: 'secret' }),
+      ).rejects.toThrow(/Unsafe managed path/u);
+    },
+  );
 
   it.runIf(process.platform === 'win32')(
     'Windowsのパス区切りでもVault配下のmanaged directoryを受理する',

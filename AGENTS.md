@@ -11,7 +11,7 @@
 - 個人の Obsidian Vault 名、同期対象の実ページ ID、実ディレクトリ構成
 - Notion トークン・API キー・その他の秘密情報
 
-実環境の設定（`config.yaml` / `.env` 等）や実行状態（`*.db` / `.state/` 等）、エージェントのローカル状態（`.steering/` / `.codex/` / `.claude/settings.local.json` 等）は `.gitignore` で除外する。共有すべきはルール・設計・サンプル（`*.example`）のみ。過去に steering 経由でローカル絶対パス・Vault 名が git 履歴へ漏れ、リポジトリの削除・再作成が必要になった事故がある。コミット前に `git status` / `git diff` で混入を確認すること。
+実環境の設定（`config.yaml` / `.env` 等）や実行状態（`*.db` / `.state/` 等）、エージェントのローカル状態（`.steering/` / `.codex/` / `.claude/settings.local.json` 等）は `.gitignore` で除外する。共有すべきはルール・設計・サンプル（`*.example`）のみ。コミット前に `git status` / `git diff` で実環境情報の混入がないことを確認する。
 
 ## 目的と正本
 
