@@ -74,7 +74,7 @@ NOTION_TOKEN=<your-integration-token>
 
 `config.yaml`で少なくとも次を変更します。
 
-- `notion.roots[].page_id`: Notionルートのpage ID。各ページが属するルートは1つだけにしてください。同じpage IDを複数指定する、あるルートの配下にある別のページ（データベースの行ページを含む）をルートに指定する、といった重なりがあると、同じページを二重に処理してしまうため同期を停止します
+- `notion.roots[].page_id`: Notionルートのpage ID。各ページが属するルートは1つだけにしてください。同じページを二重に処理しないため、重なりは次のように拒否されます。同じpage IDを複数指定した場合は設定の読み込み時にエラーになります。あるルートの配下にある別のページ（データベースの行ページを含む）をルートに指定した場合は、Notionの階層を調べたうえで同期を停止します
 - `notion.roots[].local_name`: ローカルのルート名
 - `obsidian.vault_path`: 実在するVaultのパス
 - `obsidian.managed_path`: Vault内の専用管理ディレクトリ。Vaultルート自体は指定できません
