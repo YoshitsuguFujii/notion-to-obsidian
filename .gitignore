@@ -13,7 +13,7 @@ config.local.yaml
 *.db
 *.db-wal
 *.db-shm
-*.lock
+*.db.lock
 *.log
 
 # Build output

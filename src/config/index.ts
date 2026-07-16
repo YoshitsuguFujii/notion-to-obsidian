@@ -1,6 +1,6 @@
 import { access, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { parse } from 'yaml';
 import { z } from 'zod';
 import { DomainError } from '../errors.js';
@@ -215,7 +215,8 @@ export async function loadConfig(
   const managedRelativePath = relative(vaultPath, managedPath);
   const managedPathIsDescendant =
     managedRelativePath !== '' &&
-    !managedRelativePath.startsWith('..') &&
+    managedRelativePath !== '..' &&
+    !managedRelativePath.startsWith(`..${sep}`) &&
     !isAbsolute(managedRelativePath);
   if (
     managedPath === vaultPath ||
