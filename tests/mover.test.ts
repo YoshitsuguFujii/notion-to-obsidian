@@ -40,14 +40,12 @@ describe('moveManagedFile', () => {
       managedRoot: root,
       sourcePath: 'Old/Page.md',
       targetPath: 'New/Page.md',
-      notionId,
       stored: { notionId, localPath: 'Old/Page.md' },
       onMoved,
     });
     expect(result).toEqual({
       moved: true,
       targetPath: 'New/Page.md',
-      warnings: [],
     });
     expect(await readFile(join(root, 'New', 'Page.md'), 'utf8')).toBe(markdown);
     await expect(access(join(root, 'Old'))).rejects.toThrow();
@@ -60,7 +58,6 @@ describe('moveManagedFile', () => {
       managedRoot: root,
       sourcePath: 'Old/Page.md',
       targetPath: 'New/Page.md',
-      notionId,
       stored: { notionId, localPath: 'Old/Page.md' },
       rename: () =>
         Promise.reject(
@@ -78,7 +75,6 @@ describe('moveManagedFile', () => {
         managedRoot: root,
         sourcePath: 'Old/Page.md',
         targetPath: 'New/Page.md',
-        notionId,
         stored: { notionId, localPath: 'Old/Page.md' },
         rename: () =>
           Promise.reject(
@@ -94,22 +90,22 @@ describe('moveManagedFile', () => {
     await expect(access(join(root, 'New', 'Page.md'))).rejects.toThrow();
   });
 
-  it('targetに管理外ファイルがあれば決定論的別名へ移動してwarningを返す', async () => {
+  it('確定後のMOVE先にファイルが作られていたら移動を停止する', async () => {
     const root = await fixture();
     await mkdir(join(root, 'New'), { recursive: true });
     await writeFile(join(root, 'New', 'Page.md'), 'unmanaged');
-    const result = await moveManagedFile({
-      managedRoot: root,
-      sourcePath: 'Old/Page.md',
-      targetPath: 'New/Page.md',
-      notionId,
-      stored: { notionId, localPath: 'Old/Page.md' },
-    });
-    expect(result.targetPath).toBe('New/Page--11111111.md');
-    expect(result.warnings).toHaveLength(1);
+    await expect(
+      moveManagedFile({
+        managedRoot: root,
+        sourcePath: 'Old/Page.md',
+        targetPath: 'New/Page.md',
+        stored: { notionId, localPath: 'Old/Page.md' },
+      }),
+    ).rejects.toMatchObject({ category: 'safety' });
     expect(await readFile(join(root, 'New', 'Page.md'), 'utf8')).toBe(
       'unmanaged',
     );
+    expect(await readFile(join(root, 'Old', 'Page.md'), 'utf8')).toBe(markdown);
   });
 
   it('旧directoryに管理外ファイルがあればdirectoryを残す', async () => {
@@ -119,7 +115,6 @@ describe('moveManagedFile', () => {
       managedRoot: root,
       sourcePath: 'Old/Page.md',
       targetPath: 'New/Page.md',
-      notionId,
       stored: { notionId, localPath: 'Old/Page.md' },
     });
     expect(await readdir(join(root, 'Old'))).toEqual(['notes.txt']);
@@ -133,7 +128,6 @@ describe('moveManagedFile', () => {
         managedRoot: root,
         sourcePath: 'Old/Page.md',
         targetPath: 'New/Page.md',
-        notionId,
         stored: { notionId, localPath: 'Old/Page.md' },
       }),
     ).rejects.toMatchObject({ category: 'safety' });
@@ -149,27 +143,11 @@ describe('moveManagedFile', () => {
         managedRoot: root,
         sourcePath: 'Old/Page.md',
         targetPath: 'New/Page.md',
-        notionId,
         stored: { notionId, localPath: 'Old/Page.md' },
         onMoved: () => Promise.reject(new Error('DB update failed')),
       }),
     ).rejects.toMatchObject({ category: 'storage' });
     expect(await readFile(join(root, 'New', 'Page.md'), 'utf8')).toBe(markdown);
     await expect(access(join(root, 'Old', 'Page.md'))).rejects.toThrow();
-  });
-
-  it('dry-runではdirectoryやfileを変更しない', async () => {
-    const root = await fixture();
-    await expect(
-      moveManagedFile({
-        managedRoot: root,
-        sourcePath: 'Old/Page.md',
-        targetPath: 'New/Page.md',
-        notionId,
-        stored: { notionId, localPath: 'Old/Page.md' },
-        dryRun: true,
-      }),
-    ).resolves.toMatchObject({ moved: false, targetPath: 'New/Page.md' });
-    expect(await readdir(root)).toEqual(['Old']);
   });
 });

@@ -10,7 +10,7 @@ import {
   rmdir,
   unlink as nodeUnlink,
 } from 'node:fs/promises';
-import { dirname, posix, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { DomainError, InfraError } from '../errors.js';
 import { assertNoSymlinkEscape, joinManagedPath } from './safe-path.js';
 import {
@@ -22,9 +22,7 @@ interface MoveOptions {
   managedRoot: string;
   sourcePath: string;
   targetPath: string;
-  notionId: string;
   stored: StoredManagementRecord;
-  dryRun?: boolean;
   rename?: (from: string, to: string) => Promise<void>;
   copyFile?: (from: string, to: string) => Promise<void>;
   unlink?: (path: string) => Promise<void>;
@@ -34,7 +32,6 @@ interface MoveOptions {
 export interface MoveResult {
   moved: boolean;
   targetPath: string;
-  warnings: string[];
 }
 
 const inspector = {
@@ -56,13 +53,6 @@ async function exists(path: string): Promise<boolean> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
-}
-
-function collisionPath(path: string, notionId: string): string {
-  const extension = posix.extname(path);
-  const stem = extension ? path.slice(0, -extension.length) : path;
-  const shortId = notionId.replaceAll('-', '').slice(0, 8);
-  return `${stem}--${shortId}${extension}`;
 }
 
 async function removeEmptyParent(
@@ -91,20 +81,16 @@ export async function moveManagedFile(
     throw new DomainError('safety', 'Source file is not managed');
   }
 
-  let targetPath = options.targetPath.split('\\').join('/');
-  let target = joinManagedPath(options.managedRoot, targetPath);
+  const targetPath = options.targetPath.split('\\').join('/');
+  const target = joinManagedPath(options.managedRoot, targetPath);
   await assertNoSymlinkEscape(inspector, options.managedRoot, target);
-  const warnings: string[] = [];
-  if (!options.dryRun) await mkdir(dirname(target), { recursive: true });
   if (await exists(target)) {
-    targetPath = collisionPath(targetPath, options.notionId);
-    target = joinManagedPath(options.managedRoot, targetPath);
-    if (await exists(target)) {
-      throw new DomainError('safety', 'Collision fallback path already exists');
-    }
-    warnings.push('Unmanaged target collision used a deterministic fallback');
+    throw new DomainError(
+      'safety',
+      'Move target already exists; run plan again before syncing',
+    );
   }
-  if (options.dryRun) return { moved: false, targetPath, warnings };
+  await mkdir(dirname(target), { recursive: true });
 
   try {
     try {
@@ -120,7 +106,7 @@ export async function moveManagedFile(
     }
     await options.onMoved?.(targetPath);
     await removeEmptyParent(options.managedRoot, source);
-    return { moved: true, targetPath, warnings };
+    return { moved: true, targetPath };
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : 'unknown error';
     throw new InfraError('storage', `Managed move failed: ${message}`, {
