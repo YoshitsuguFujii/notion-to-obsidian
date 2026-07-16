@@ -56,6 +56,46 @@ describe('validateSyncPlan', () => {
     ).rejects.toMatchObject({ category: 'safety' });
   });
 
+  it('大文字小文字だけ異なる同一出力パスへの複数ページ割当を拒否する', async () => {
+    await expect(
+      validateSyncPlan({
+        ...validPlan,
+        actions: [
+          {
+            type: 'WRITE',
+            notionId: 'page-1',
+            targetPath: join(managedRoot, 'Page--abcdef12.md'),
+          },
+          {
+            type: 'WRITE',
+            notionId: 'page-2',
+            targetPath: join(managedRoot, 'page--ABCDEF12.md'),
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ category: 'safety' });
+  });
+
+  it('Unicodeの合成形式だけ異なる同一出力パスへの複数ページ割当を拒否する', async () => {
+    await expect(
+      validateSyncPlan({
+        ...validPlan,
+        actions: [
+          {
+            type: 'WRITE',
+            notionId: 'page-1',
+            targetPath: join(managedRoot, 'Cafe\u0301.md'),
+          },
+          {
+            type: 'WRITE',
+            notionId: 'page-2',
+            targetPath: join(managedRoot, 'Café.md'),
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ category: 'safety' });
+  });
+
   it('managed root 自体の削除を拒否する', async () => {
     await expect(
       validateSyncPlan({

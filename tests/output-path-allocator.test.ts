@@ -61,6 +61,40 @@ describe('allocateOutputPaths', () => {
     expect(result.paths[1]?.expectedPath).toBe('New/Page--22222222.md');
   });
 
+  it('大文字小文字だけ異なる計画パスとの衝突をID付きパスで回避する', async () => {
+    const result = await allocateOutputPaths({
+      paths: [
+        path('create-page', 'New/page--ABCDEF12.md'),
+        path('22222222-2222-4222-8222-222222222222', 'New/Page--abcdef12.md'),
+      ],
+      existingById: new Map([
+        ['22222222-2222-4222-8222-222222222222', { localPath: 'Old/Page.md' }],
+      ]),
+      managedRoot,
+      exists: existingPaths(),
+    });
+
+    expect(result.paths[1]?.expectedPath).toBe(
+      'New/Page--abcdef12--22222222.md',
+    );
+  });
+
+  it('Unicodeの合成形式だけ異なる計画パスとの衝突をID付きパスで回避する', async () => {
+    const result = await allocateOutputPaths({
+      paths: [
+        path('create-page', 'New/Cafe\u0301.md'),
+        path('33333333-3333-4333-8333-333333333333', 'New/Café.md'),
+      ],
+      existingById: new Map([
+        ['33333333-3333-4333-8333-333333333333', { localPath: 'Old/Café.md' }],
+      ]),
+      managedRoot,
+      exists: existingPaths(),
+    });
+
+    expect(result.paths[1]?.expectedPath).toBe('New/Café--33333333.md');
+  });
+
   it('ID付きパスもローカルまたは別リソースに割り当て済みなら停止する', async () => {
     await expect(
       allocateOutputPaths({

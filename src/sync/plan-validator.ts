@@ -7,6 +7,7 @@ import {
   joinManagedPath,
 } from '../filesystem/safe-path.js';
 import { assertTrashWithinLimits } from './deletion-guard.js';
+import { outputPathCollisionKey } from './output-path-collision-key.js';
 
 export type SyncPlanAction =
   | {
@@ -108,7 +109,7 @@ export async function validateSyncPlan(
       }
     }
     if (action.type === 'WRITE' || action.type === 'MOVE') {
-      const output = resolve(action.targetPath);
+      const output = outputPathCollisionKey(resolve(action.targetPath));
       const assigned = outputs.get(output);
       if (assigned && assigned !== action.notionId) {
         throw safetyError('Multiple resources share the same output path');
