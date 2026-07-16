@@ -24,7 +24,6 @@ interface MoveOptions {
   sourcePath: string;
   targetPath: string;
   stored: StoredManagementRecord;
-  rename?: (from: string, to: string) => Promise<void>;
   link?: (existingPath: string, newPath: string) => Promise<void>;
   copyFile?: (from: string, to: string, mode?: number) => Promise<void>;
   unlink?: (path: string) => Promise<void>;
