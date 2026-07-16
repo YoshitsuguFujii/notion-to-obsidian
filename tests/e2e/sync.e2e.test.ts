@@ -703,7 +703,7 @@ describe('sync E2E', () => {
     ).resolves.toContain('# Task body');
   });
 
-  it('Data Sourceのdatabase IDを指定してもindexに行一覧を出力する', async () => {
+  it('Data Sourceのdatabase IDを指定すると行一覧のindexだけを出力する', async () => {
     const databaseId = '77777777-7777-4777-8777-777777777777';
     const dataSourceId = '88888888-8888-4888-8888-888888888888';
     const rowId = '99999999-9999-4999-8999-999999999999';
@@ -746,6 +746,9 @@ describe('sync E2E', () => {
     await expect(
       readFile(join(app.managedRoot, 'Notes', 'Tasks', '_index.md'), 'utf8'),
     ).resolves.toContain('First task');
+    await expect(
+      access(join(app.managedRoot, 'Notes', 'Tasks', 'First task.md')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('複数のdatabaseが同じData Sourceを参照しても行を初出のdatabaseに一度だけ同期する', async () => {
