@@ -240,12 +240,8 @@ export async function runSyncOrchestrator(
           ? { ...resource, title: root.localName }
           : resource,
       );
-      const resources = pathResources.filter(
-        (resource) => !options.pageId || resource.notionId === options.pageId,
-      );
-      const expanded = [...resources];
       const pathExpanded = [...pathResources];
-      for (const resource of resources) {
+      for (const resource of pathResources) {
         if (
           resource.objectType !== 'database' ||
           !resource.dataSourceId ||
@@ -293,13 +289,15 @@ export async function runSyncOrchestrator(
             inTrash: row.in_trash === true || row.archived === true,
             url: typeof row.url === 'string' ? row.url : '',
           };
-          expanded.push(expandedRow);
           pathExpanded.push(expandedRow);
           rowProperties.set(notionId, properties);
           indexedRows.push({ notionId, properties });
         }
         dataSourceRows.set(resource.notionId, indexedRows);
       }
+      const expanded = pathExpanded.filter(
+        (resource) => !options.pageId || resource.notionId === options.pageId,
+      );
       censuses.push({ ...result, resources: expanded });
       pathCensuses.push({ ...result, resources: pathExpanded });
     }
@@ -317,6 +315,11 @@ export async function runSyncOrchestrator(
         rootIdByNotionId.set(resource.notionId, census.rootId);
       }
     }
+    const pathResourceById = new Map(
+      pathCensuses.flatMap((census) =>
+        census.resources.map((resource) => [resource.notionId, resource]),
+      ),
+    );
 
     const existing = dependencies.store.listResources();
     const existingAssets = dependencies.store.listAssets();
@@ -397,9 +400,7 @@ export async function runSyncOrchestrator(
               ),
               rows: indexedRows.flatMap(({ notionId }) => {
                 const rowPath = pathById.get(notionId);
-                const rowResource = census.resources.find(
-                  (candidate) => candidate.notionId === notionId,
-                );
+                const rowResource = pathResourceById.get(notionId);
                 return rowPath && rowResource
                   ? [{ title: rowResource.title, path: rowPath.expectedPath }]
                   : [];
