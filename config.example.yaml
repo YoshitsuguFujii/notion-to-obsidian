@@ -1,6 +1,8 @@
 # Notion API access. The token is read only from NOTION_TOKEN.
 notion:
   roots:
+    # Each page must belong to exactly one root. Overlapping roots (a duplicate
+    # page_id, or a root nested under another root) stop the sync.
     # Required. Stable UUID of a root page shared with the Integration.
     - page_id: '00000000-0000-0000-0000-000000000000'
       # Required. Local filename/directory label used for this root.
