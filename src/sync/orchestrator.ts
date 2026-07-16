@@ -7,6 +7,7 @@ import {
   planResourcePaths,
   type PlannedResourcePath,
 } from '../domain/path-plan.js';
+import { DomainError } from '../errors.js';
 import { writeMarkdownAtomic } from '../filesystem/atomic-write.js';
 import {
   inspectManagementMarker,
@@ -232,8 +233,19 @@ export async function runSyncOrchestrator(
     >();
     const rowProperties = new Map<string, Record<string, unknown>>();
     const seenDataSources = new Set<string>();
+    const configuredRootByResourceId = new Map<string, string>();
     for (const root of selectedRoots) {
       const result = await dependencies.census(root.pageId);
+      for (const resource of result.resources) {
+        const firstRootId = configuredRootByResourceId.get(resource.notionId);
+        if (firstRootId && firstRootId !== root.pageId) {
+          throw new DomainError(
+            'validation',
+            `Notion page ID ${resource.notionId} appears in configured roots ${firstRootId} and ${root.pageId}. Remove one overlapping root from notion.roots`,
+          );
+        }
+        configuredRootByResourceId.set(resource.notionId, root.pageId);
+      }
       const pathResources = result.resources.map((resource) =>
         resource.notionId === root.pageId
           ? { ...resource, title: root.localName }

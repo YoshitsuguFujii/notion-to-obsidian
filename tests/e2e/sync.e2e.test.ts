@@ -44,6 +44,18 @@ afterEach(async () => {
 });
 
 describe('sync E2E', () => {
+  it('親子関係にある同期ルートを重複ページと対処方法を示して拒否する', async () => {
+    const app = await harness([rootPage(), childPage()]);
+    app.config.notion.roots = [
+      { pageId: ROOT_ID, localName: 'Notes' },
+      { pageId: CHILD_ID, localName: 'Child root' },
+    ];
+
+    await expect(app.sync()).rejects.toThrow(
+      new RegExp(`${CHILD_ID}.*${ROOT_ID}.*${CHILD_ID}.*Remove`, 'u'),
+    );
+  });
+
   it('外部親を持つ同期ルートを最上位へ配置し親IDを保存しない', async () => {
     const app = await harness([rootPage({ parentId: 'outside-page' })]);
 

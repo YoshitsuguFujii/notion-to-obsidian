@@ -8,6 +8,22 @@ import { DomainError } from '../errors.js';
 const rootSchema = z
   .object({ page_id: z.string().min(1), local_name: z.string().min(1) })
   .strict();
+const rootsSchema = z
+  .array(rootSchema)
+  .min(1)
+  .superRefine((roots, context) => {
+    const seenPageIds = new Set<string>();
+    roots.forEach((root, index) => {
+      if (seenPageIds.has(root.page_id)) {
+        context.addIssue({
+          code: 'custom',
+          path: [index, 'page_id'],
+          message: `Duplicate notion root page_id: ${root.page_id}. Remove duplicate roots from notion.roots`,
+        });
+      }
+      seenPageIds.add(root.page_id);
+    });
+  });
 const defaultExternalAssetAllowedContentTypes = [
   'image/jpeg',
   'image/png',
@@ -71,7 +87,7 @@ const fileSchema = z
   .object({
     notion: z
       .object({
-        roots: z.array(rootSchema).min(1),
+        roots: rootsSchema,
         request_rate_per_second: z.number().positive().default(2.5),
         concurrency: z.number().int().positive().default(2),
       })

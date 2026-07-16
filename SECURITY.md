@@ -23,7 +23,7 @@
 `download_external_assets`は既定で`false`です。有効化すると、取得URLは次の検査を受けます。
 
 - HTTP / HTTPS以外を拒否
-- IPアドレスはglobal unicastだけを許可し、localhost、loopback、private、link-local、metadata service、documentation、transition、multicastを含むその他の範囲と判定不能な入力を拒否
+- IPv6は`2000::/3`のうちIANA特殊用途レジストリでGlobally Reachableではない範囲を除いて許可し、IPv4は公開範囲だけを許可する。localhost、loopback、private、link-local、metadata service、documentation、transition、multicastを含むその他の範囲と判定不能な入力は拒否
 - DNS解決後の全IPを検査
 - redirectごとにURLとIPを再検査し、redirect回数を制限
 - timeout、応答サイズ、Content-Type、拡張子を検査し、一時ファイルからatomicに確定

@@ -39,6 +39,7 @@ export interface RootCensus {
 }
 
 type UnknownRecord = Record<string, unknown>;
+type RootReachability = 'inside' | 'outside' | 'unknown';
 
 function record(value: unknown): UnknownRecord | undefined {
   return value !== null && typeof value === 'object'
@@ -137,21 +138,21 @@ async function reachesRoot(
   client: NotionClient,
   candidateId: string,
   rootId: string,
-): Promise<boolean | undefined> {
+): Promise<RootReachability> {
   const visited = new Set<string>();
   let currentId = candidateId;
   try {
     while (!visited.has(currentId)) {
-      if (currentId === rootId) return true;
+      if (currentId === rootId) return 'inside';
       visited.add(currentId);
       const page = record(await client.retrievePage(currentId));
       const parentValue = parent(page?.parent);
-      if (!parentValue.parentId) return false;
+      if (!parentValue.parentId) return 'outside';
       currentId = parentValue.parentId;
     }
-    return undefined;
+    return 'unknown';
   } catch {
-    return undefined;
+    return 'unknown';
   }
 }
 
@@ -165,6 +166,7 @@ async function searchForMissedResources(
       client.search(cursor),
     );
     const warnings: CensusWarning[] = [];
+    let searchComplete = true;
     for (const candidate of candidates) {
       const candidateRecord = record(candidate);
       const candidateId = string(candidateRecord?.id);
@@ -174,16 +176,19 @@ async function searchForMissedResources(
         discovered.has(candidateId)
       )
         continue;
-      if ((await reachesRoot(client, candidateId, rootId)) === true) {
+      const reachability = await reachesRoot(client, candidateId, rootId);
+      if (reachability === 'inside') {
         warnings.push({
           type: 'search_missed_resource',
           resourceId: candidateId,
           message:
             'Search found a root descendant missing from direct traversal',
         });
+      } else if (reachability === 'unknown') {
+        searchComplete = false;
       }
     }
-    return { warnings, searchComplete: true };
+    return { warnings, searchComplete };
   } catch {
     return {
       warnings: [

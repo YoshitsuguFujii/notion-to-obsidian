@@ -102,6 +102,46 @@ function parseIpv6(address: string): readonly number[] | undefined {
   return [...left, ...Array<number>(omittedGroupCount).fill(0), ...right];
 }
 
+interface Ipv6Prefix {
+  groups: readonly number[];
+  length: number;
+}
+
+function matchesIpv6Prefix(
+  groups: readonly number[],
+  prefix: Ipv6Prefix,
+): boolean {
+  const completeGroups = Math.floor(prefix.length / 16);
+  for (let index = 0; index < completeGroups; index += 1) {
+    if (groups[index] !== prefix.groups[index]) return false;
+  }
+  const remainingBits = prefix.length % 16;
+  if (remainingBits === 0) return true;
+  const group = groups[completeGroups];
+  const prefixGroup = prefix.groups[completeGroups];
+  if (group === undefined || prefixGroup === undefined) return false;
+  const mask = (0xffff << (16 - remainingBits)) & 0xffff;
+  return (group & mask) === (prefixGroup & mask);
+}
+
+// 2001::/23 is non-global by default, but these more-specific IANA assignments are reachable.
+const globallyReachableIetfProtocolAssignments: readonly Ipv6Prefix[] = [
+  { groups: [0x2001, 0x0001, 0, 0, 0, 0, 0, 1], length: 128 },
+  { groups: [0x2001, 0x0001, 0, 0, 0, 0, 0, 2], length: 128 },
+  { groups: [0x2001, 0x0001, 0, 0, 0, 0, 0, 3], length: 128 },
+  { groups: [0x2001, 0x0003], length: 32 },
+  { groups: [0x2001, 0x0004, 0x0112], length: 48 },
+  { groups: [0x2001, 0x0020], length: 28 },
+  { groups: [0x2001, 0x0030], length: 28 },
+];
+
+const blockedSpecialPurposeIpv6Prefixes: readonly Ipv6Prefix[] = [
+  { groups: [0x2001, 0], length: 23 },
+  { groups: [0x2001, 0x0db8], length: 32 },
+  { groups: [0x2002], length: 16 },
+  { groups: [0x3fff, 0], length: 20 },
+];
+
 function isBlockedIpv6(address: string): boolean {
   const groups = parseIpv6(address);
   if (!groups) return true;
@@ -119,13 +159,22 @@ function isBlockedIpv6(address: string): boolean {
     );
   }
 
+  if (
+    globallyReachableIetfProtocolAssignments.some((prefix) =>
+      matchesIpv6Prefix(groups, prefix),
+    )
+  ) {
+    return false;
+  }
+
   return (
     first === undefined ||
     second === undefined ||
     first < 0x2000 ||
     first > 0x3fff ||
-    (first === 0x2001 && (second === 0 || second === 0x0db8)) ||
-    first === 0x2002
+    blockedSpecialPurposeIpv6Prefixes.some((prefix) =>
+      matchesIpv6Prefix(groups, prefix),
+    )
   );
 }
 
