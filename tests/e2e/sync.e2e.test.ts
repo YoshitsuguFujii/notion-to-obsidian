@@ -335,16 +335,35 @@ describe('sync E2E', () => {
     );
   });
 
-  it('MOVE先の既存ファイルを維持し実際の移動先をDBへ保存する', async () => {
-    const app = await harness([rootPage(), childPage()]);
+  it('MOVE衝突の確定パスをdry-run・WikiLink・実同期で一貫して使う', async () => {
+    const childLink = `https://www.notion.so/${CHILD_ID.replaceAll('-', '')}`;
+    const app = await harness([
+      rootPage({ markdown: `[Child](${childLink})` }),
+      childPage(),
+    ]);
     await app.sync();
     const occupiedPath = join(app.managedRoot, 'Notes', 'Renamed.md');
     await writeFile(occupiedPath, '# Personal note\n');
-    app.setPages([rootPage(), childPage({ title: 'Renamed' })]);
+    app.setPages([
+      rootPage({
+        markdown: `[Child](${childLink})`,
+        lastEditedTime: '2026-07-12T02:00:00.000Z',
+      }),
+      childPage({ title: 'Renamed' }),
+    ]);
+
+    const fallbackPath = 'Notes/Renamed--44444444.md';
+    const dryRun = await app.sync({ dryRun: true });
+    expect(dryRun.actions).toContainEqual(
+      expect.objectContaining({
+        type: 'MOVE',
+        notionId: CHILD_ID,
+        path: fallbackPath,
+      }),
+    );
 
     await app.sync();
 
-    const fallbackPath = 'Notes/Renamed--44444444.md';
     expect(app.store.getResource(CHILD_ID)).toMatchObject({
       localPath: fallbackPath,
       expectedPath: fallbackPath,
@@ -354,6 +373,9 @@ describe('sync E2E', () => {
     await expect(readFile(occupiedPath, 'utf8')).resolves.toBe(
       '# Personal note\n',
     );
+    await expect(
+      readFile(join(app.managedRoot, 'Notes.md'), 'utf8'),
+    ).resolves.toContain('[[Notes/Renamed--44444444|Child]]');
 
     const second = await app.sync();
     expect(second.actions).toContainEqual(

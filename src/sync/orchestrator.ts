@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { access, readFile } from 'node:fs/promises';
-import { posix } from 'node:path';
 import type { AppConfig } from '../config/index.js';
 import { processPageAssets } from '../assets/processor.js';
 import type { DownloadResult } from '../assets/http-downloader.js';
@@ -43,6 +42,7 @@ import {
   resolveInternalLinks,
 } from '../transform/obsidian-links.js';
 import { planMissingResources } from './deletion-guard.js';
+import { allocateOutputPaths } from './output-path-allocator.js';
 import { validateSyncPlan, type SyncPlanAction } from './plan-validator.js';
 import { reconcileResource, type ResourceFingerprint } from './reconciler.js';
 
@@ -333,8 +333,23 @@ export async function runSyncOrchestrator(
         }),
       );
     }
-    const pathById = new Map(allPaths.map((path) => [path.notionId, path]));
-    const idToPath = buildIdToPathMap(allPaths);
+    const outputPathAllocation = await allocateOutputPaths({
+      paths: allPaths,
+      existingById,
+      managedRoot: config.obsidian.managedPath,
+      exists,
+    });
+    const pathById = new Map(
+      outputPathAllocation.paths.map((path) => [path.notionId, path]),
+    );
+    const idToPath = buildIdToPathMap(outputPathAllocation.paths);
+    const collisionWarningsById = new Map<string, string[]>();
+    for (const warning of outputPathAllocation.warnings) {
+      collisionWarningsById.set(warning.notionId, [
+        ...(collisionWarningsById.get(warning.notionId) ?? []),
+        warning.message,
+      ]);
+    }
     const planned: PlannedContent[] = [];
     let warningCount = 0;
     for (const census of censuses) {
@@ -491,7 +506,13 @@ export async function runSyncOrchestrator(
             }
           }
         }
-        warningCount += retrieved.warnings.length;
+        const warnings = [
+          ...retrieved.warnings,
+          ...(collisionWarningsById.get(resource.notionId) ?? []).map(
+            (message) => ({ type: 'move_collision', message }),
+          ),
+        ];
+        warningCount += warnings.length;
         planned.push({
           resource,
           path,
@@ -499,7 +520,7 @@ export async function runSyncOrchestrator(
           sourceBody,
           contentHash,
           structureHash,
-          warnings: retrieved.warnings,
+          warnings,
           fingerprint,
           stored,
           reconciliation,
@@ -677,38 +698,12 @@ export async function runSyncOrchestrator(
       for (const item of planned) {
         const type = item.reconciliation.type;
         if (type === 'MOVE' && item.stored?.localPath) {
-          const moveResult = await moveManagedFile({
+          await moveManagedFile({
             managedRoot: config.obsidian.managedPath,
             sourcePath: item.stored.localPath,
             targetPath: item.path.expectedPath,
-            notionId: item.resource.notionId,
             stored: item.stored,
           });
-          if (moveResult.targetPath !== item.path.expectedPath) {
-            const extension = posix.extname(moveResult.targetPath);
-            item.path = {
-              ...item.path,
-              expectedPath: moveResult.targetPath,
-              resolvedFilename: posix.basename(
-                moveResult.targetPath,
-                extension,
-              ),
-            };
-            item.structureHash = hash(
-              JSON.stringify({
-                rootId: item.resource.rootId,
-                parentId: item.resource.parentId,
-                expectedPath: item.path.expectedPath,
-              }),
-            );
-          }
-          item.warnings.push(
-            ...moveResult.warnings.map((message) => ({
-              type: 'move_collision',
-              message,
-            })),
-          );
-          warningCount += moveResult.warnings.length;
         }
         const absolutePath = joinManagedPath(
           config.obsidian.managedPath,
