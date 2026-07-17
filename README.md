@@ -214,6 +214,10 @@ syncは`<state.database_path>.lock`で同時実行を防ぎます。通常終了
 
 state DBに未完了runがある場合、次回syncはApply前にcrash recoveryを実行します。管理マーカーとDBを照合し、書込み・MOVE・TRASHの片側反映、重複、管理下の一時ファイルを復旧・整理します。管理対象外ファイルは変更しません。`--dry-run`では検出だけで修復しません。
 
+MarkdownのCREATE中に強制終了すると、管理マーカーがあるもののstate DBに記録がない正規Markdown、state DBに記録がない一時ファイル、state DBに記録がある一時ファイルが残ることがあります。いずれも自動回復しません。最初の正規Markdownは次回syncで管理対象外と判定され、同期が停止します。state DBに記録がない一時ファイルはcrash recoveryの対象外です。正常終了後に残ったstate DBに記録がある一時ファイルも、未完了runがないため通常の次回syncでは自動回収されません。
+
+復旧時はlaunchdなどの自動実行を止め、Vaultとstate DBをバックアップしてから`verify`を実行します。state DBに記録がない正規Markdownと一時ファイルは削除せずmanaged directoryの外へ退避し、`plan`、`sync --dry-run`、通常の`sync`の順で再作成内容を確認して、正規Markdownとstate DBを再確立します。state DBに記録がある一時ファイルは、正規Markdownの管理マーカーとstate DBの`local_path`が一致することを確認してから、一時ファイルだけをmanaged directoryの外へ退避してください。管理マーカー・内容・Notion page IDの一致だけを根拠にstate DBを手編集したり、既存ファイルを管理対象として取り込んだりしないでください。
+
 ### 画像・アセットが更新されない
 
 既知のキャッシュ制約です。Vaultとstate DBをバックアップし、該当ページの`<managed>/_assets/<page-id>/`から対象ファイルを削除します。次に`plan`、`sync --page-id <page-id> --dry-run`、実同期の順で再取得を確認します。
