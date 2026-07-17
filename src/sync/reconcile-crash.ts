@@ -1,5 +1,11 @@
-import { readFile, readdir, unlink } from 'node:fs/promises';
+import {
+  lstat,
+  readFile,
+  readdir,
+  unlink as nodeUnlink,
+} from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
+import { InfraError } from '../errors.js';
 import {
   inspectManagementMarker,
   readManagementMarker,
@@ -21,6 +27,7 @@ interface ReconcileCrashOptions {
   store: StateStore;
   dryRun?: boolean;
   now?: string;
+  unlink?: (path: string) => Promise<void>;
 }
 
 interface ScannedFile {
@@ -57,18 +64,39 @@ async function scanManagedMarkers(managedRoot: string): Promise<ScannedFile[]> {
       const content = await readFile(absolutePath, 'utf8');
       const marker = readManagementMarker(content);
       if (!marker) continue;
+      const temporary = entry.name.endsWith('.tmp');
       files.push({
         absolutePath,
         path: relative(resolve(managedRoot), absolutePath).split(sep).join('/'),
         content,
         notionId: marker.notionId,
         ...(marker.contentHash ? { contentHash: marker.contentHash } : {}),
-        temporary: entry.name.endsWith('.tmp'),
+        temporary,
       });
     }
   };
   await visit(resolve(managedRoot));
   return files;
+}
+
+async function findLinkedTrash(
+  source: ScannedFile,
+  trashCandidates: ScannedFile[],
+): Promise<ScannedFile | undefined> {
+  const sourceIdentity = await lstat(source.absolutePath, { bigint: true });
+  for (const candidate of trashCandidates) {
+    if (candidate.path === source.path) continue;
+    const candidateIdentity = await lstat(candidate.absolutePath, {
+      bigint: true,
+    });
+    if (
+      sourceIdentity.dev === candidateIdentity.dev &&
+      sourceIdentity.ino === candidateIdentity.ino
+    ) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function saveResource(
@@ -87,6 +115,7 @@ export async function reconcileCrash(
 ): Promise<{ findings: CrashFinding[] }> {
   const dryRun = options.dryRun ?? false;
   const now = options.now ?? new Date().toISOString();
+  const unlinkFile = options.unlink ?? nodeUnlink;
   const findings: CrashFinding[] = options.store
     .listUnfinishedRuns()
     .map(({ runId }) => ({ type: 'unfinished_run' as const, runId }));
@@ -103,7 +132,7 @@ export async function reconcileCrash(
       notionId: file.notionId,
       path: file.path,
     });
-    if (!dryRun) await unlink(file.absolutePath);
+    if (!dryRun) await unlinkFile(file.absolutePath);
   }
 
   const stableFiles = files.filter(({ temporary }) => !temporary);
@@ -117,7 +146,10 @@ export async function reconcileCrash(
     const local = resource.localPath
       ? matching.find(({ path }) => path === resource.localPath)
       : undefined;
-    const trashed = matching.find(({ path }) => path.startsWith('.trash/'));
+    const trashCandidates = matching.filter(({ path }) =>
+      path.startsWith('.trash/'),
+    );
+    const trashed = trashCandidates[0];
 
     if (trashed && !expected && !local) {
       findings.push({
@@ -135,6 +167,61 @@ export async function reconcileCrash(
           tombstonedAt: now,
           trashReason: 'manual_reconcile',
           ...(trashed.contentHash ? { contentHash: trashed.contentHash } : {}),
+        },
+        now,
+        dryRun,
+      );
+      continue;
+    }
+
+    const sourceIsManaged =
+      local && resource.localPath === resource.expectedPath
+        ? inspectManagementMarker({
+            managedRoot: options.managedRoot,
+            filePath: local.absolutePath,
+            content: local.content,
+            stored: resource,
+          }).managed
+        : false;
+    const linkedTrash =
+      local && sourceIsManaged && trashCandidates.length > 0
+        ? await findLinkedTrash(local, trashCandidates)
+        : undefined;
+
+    if (local && linkedTrash) {
+      findings.push({
+        type: 'trash_relinked',
+        notionId: resource.notionId,
+        path: linkedTrash.path,
+      });
+      findings.push({
+        type: 'duplicate_removed',
+        notionId: resource.notionId,
+        path: local.path,
+      });
+      if (!dryRun) {
+        try {
+          await unlinkFile(local.absolutePath);
+        } catch (cause) {
+          const message =
+            cause instanceof Error ? cause.message : 'unknown error';
+          throw new InfraError('storage', `Trash recovery failed: ${message}`, {
+            cause,
+          });
+        }
+      }
+      saveResource(
+        options.store,
+        resource,
+        {
+          localPath: linkedTrash.path,
+          status: 'tombstoned',
+          inTrash: true,
+          tombstonedAt: now,
+          trashReason: 'manual_reconcile',
+          ...(linkedTrash.contentHash
+            ? { contentHash: linkedTrash.contentHash }
+            : {}),
         },
         now,
         dryRun,
@@ -175,7 +262,7 @@ export async function reconcileCrash(
           notionId: resource.notionId,
           path: local.path,
         });
-        if (!dryRun) await unlink(local.absolutePath);
+        if (!dryRun) await unlinkFile(local.absolutePath);
       }
       continue;
     }
