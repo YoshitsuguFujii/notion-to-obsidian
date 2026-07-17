@@ -174,17 +174,21 @@ export async function reconcileCrash(
       continue;
     }
 
-    const sourceIsManaged =
-      local && resource.localPath === resource.expectedPath
-        ? inspectManagementMarker({
-            managedRoot: options.managedRoot,
-            filePath: local.absolutePath,
-            content: local.content,
-            stored: resource,
-          }).managed
-        : false;
+    const sourceIsAtExpectedPath =
+      local !== undefined && resource.localPath === resource.expectedPath;
+    const sourceIsManaged = local
+      ? inspectManagementMarker({
+          managedRoot: options.managedRoot,
+          filePath: local.absolutePath,
+          content: local.content,
+          stored: resource,
+        }).managed
+      : false;
     const linkedTrash =
-      local && sourceIsManaged && trashCandidates.length > 0
+      local &&
+      sourceIsAtExpectedPath &&
+      sourceIsManaged &&
+      trashCandidates.length > 0
         ? await findLinkedTrash(local, trashCandidates)
         : undefined;
 
