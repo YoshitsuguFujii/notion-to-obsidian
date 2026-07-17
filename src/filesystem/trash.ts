@@ -1,7 +1,14 @@
-import { access, lstat, mkdir, readFile, rename } from 'node:fs/promises';
+import {
+  access,
+  lstat,
+  mkdir,
+  readFile,
+  unlink as nodeUnlink,
+} from 'node:fs/promises';
 import { dirname, posix } from 'node:path';
 import { DomainError, InfraError } from '../errors.js';
 import type { TrashReason } from '../sync/deletion-guard.js';
+import { claimTargetExclusively } from './exclusive-target-claim.js';
 import {
   inspectManagementMarker,
   type StoredManagementRecord,
@@ -16,6 +23,9 @@ interface TrashOptions {
   reason: TrashReason;
   date: string;
   dryRun?: boolean;
+  link?: (existingPath: string, newPath: string) => Promise<void>;
+  copyFile?: (from: string, to: string, mode?: number) => Promise<void>;
+  unlink?: (path: string) => Promise<void>;
   onTrashed?: (result: {
     trashPath: string;
     reason: TrashReason;
@@ -80,10 +90,18 @@ export async function trashManagedFile(
   if (options.dryRun) return { trashed: false, trashPath };
 
   try {
-    await rename(source, target);
+    await claimTargetExclusively({
+      sourcePath: source,
+      targetPath: target,
+      targetExistsMessage: 'Trash collision path already exists',
+      ...(options.link ? { link: options.link } : {}),
+      ...(options.copyFile ? { copyFile: options.copyFile } : {}),
+    });
+    await (options.unlink ?? nodeUnlink)(source);
     await options.onTrashed?.({ trashPath, reason: options.reason });
     return { trashed: true, trashPath };
   } catch (cause) {
+    if (cause instanceof DomainError) throw cause;
     const message = cause instanceof Error ? cause.message : 'unknown error';
     throw new InfraError('storage', `Trash move failed: ${message}`, { cause });
   }

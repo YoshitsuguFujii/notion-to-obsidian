@@ -119,4 +119,85 @@ describe('trashManagedFile', () => {
       markdown,
     );
   });
+
+  it('退避先候補がどちらも埋まっていれば既存fileとsourceを保持して停止する', async () => {
+    const root = await fixture();
+    const baseTarget = join(root, '.trash', '2026-07-12', 'Root', 'Page.md');
+    const withIdTarget = join(
+      root,
+      '.trash',
+      '2026-07-12',
+      'Root',
+      'Page--11111111.md',
+    );
+    await mkdir(join(baseTarget, '..'), { recursive: true });
+    await writeFile(baseTarget, 'base collision');
+    await writeFile(withIdTarget, 'ID collision');
+
+    await expect(
+      trashManagedFile({
+        managedRoot: root,
+        sourcePath: 'Root/Page.md',
+        notionId,
+        stored: { notionId, localPath: 'Root/Page.md' },
+        reason: 'manual_reconcile',
+        date: '2026-07-12',
+      }),
+    ).rejects.toMatchObject({ category: 'safety' });
+    expect(await readFile(baseTarget, 'utf8')).toBe('base collision');
+    expect(await readFile(withIdTarget, 'utf8')).toBe('ID collision');
+    expect(await readFile(join(root, 'Root', 'Page.md'), 'utf8')).toBe(
+      markdown,
+    );
+  });
+
+  it('退避先の選択後に競合しても既存fileとsourceを保持してsafety停止する', async () => {
+    const root = await fixture();
+    const source = join(root, 'Root', 'Page.md');
+    const target = join(root, '.trash', '2026-07-12', 'Root', 'Page.md');
+
+    await expect(
+      trashManagedFile({
+        managedRoot: root,
+        sourcePath: 'Root/Page.md',
+        notionId,
+        stored: { notionId, localPath: 'Root/Page.md' },
+        reason: 'manual_reconcile',
+        date: '2026-07-12',
+        link: async (_existingPath, newPath) => {
+          await writeFile(newPath, 'racing unmanaged file');
+          throw Object.assign(new Error('target exists'), { code: 'EEXIST' });
+        },
+      }),
+    ).rejects.toMatchObject({ category: 'safety' });
+    expect(await readFile(target, 'utf8')).toBe('racing unmanaged file');
+    expect(await readFile(source, 'utf8')).toBe(markdown);
+  });
+
+  it('退避先の確立後にsourceを除去できなければ両方を保持してstorage errorにする', async () => {
+    const root = await fixture();
+    const source = join(root, 'Root', 'Page.md');
+    const target = join(root, '.trash', '2026-07-12', 'Root', 'Page.md');
+    const unlinkError = Object.assign(new Error('source is busy'), {
+      code: 'EBUSY',
+    });
+
+    await expect(
+      trashManagedFile({
+        managedRoot: root,
+        sourcePath: 'Root/Page.md',
+        notionId,
+        stored: { notionId, localPath: 'Root/Page.md' },
+        reason: 'manual_reconcile',
+        date: '2026-07-12',
+        unlink: () => Promise.reject(unlinkError),
+      }),
+    ).rejects.toMatchObject({
+      category: 'storage',
+      message: 'Trash move failed: source is busy',
+      cause: unlinkError,
+    });
+    expect(await readFile(source, 'utf8')).toBe(markdown);
+    expect(await readFile(target, 'utf8')).toBe(markdown);
+  });
 });

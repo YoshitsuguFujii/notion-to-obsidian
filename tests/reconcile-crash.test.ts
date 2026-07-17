@@ -1,4 +1,11 @@
-import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import {
+  access,
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -213,5 +220,166 @@ describe('reconcileCrash', () => {
     await expect(
       access(join(root, '.Page.md.id.tmp')),
     ).resolves.toBeUndefined();
+  });
+
+  it('過去の退避fileと復活したactive fileが別物なら両方とDBを維持する', async () => {
+    const { root, store } = await fixture({ hash: 'old-hash' });
+    await put(root, 'Old/Page.md', markdown('old-hash'));
+    await put(root, '.trash/2026-07-11/Old/Page.md', markdown('old-hash'));
+
+    await expect(reconcileCrash({ managedRoot: root, store })).resolves.toEqual(
+      { findings: [] },
+    );
+    await expect(access(join(root, 'Old/Page.md'))).resolves.toBeUndefined();
+    await expect(
+      access(join(root, '.trash/2026-07-11/Old/Page.md')),
+    ).resolves.toBeUndefined();
+    expect(store.getResource(notionId)).toMatchObject({
+      localPath: 'Old/Page.md',
+      status: 'active',
+      inTrash: false,
+    });
+  });
+
+  it('退避先とsourceが同じfileならsourceを除去してDBを退避先へ合わせる', async () => {
+    const { root, store } = await fixture({ hash: 'old-hash' });
+    const source = join(root, 'Old/Page.md');
+    const trashPath = '.trash/2026-07-12/Old/Page.md';
+    const target = join(root, trashPath);
+    await put(root, 'Old/Page.md', markdown('old-hash'));
+    await mkdir(join(target, '..'), { recursive: true });
+    await link(source, target);
+
+    const findings = (
+      await reconcileCrash({
+        managedRoot: root,
+        store,
+        now: '2026-07-12T01:00:00.000Z',
+      })
+    ).findings;
+    expect(findings).toContainEqual({
+      type: 'trash_relinked',
+      notionId,
+      path: trashPath,
+    });
+    expect(findings).toContainEqual({
+      type: 'duplicate_removed',
+      notionId,
+      path: 'Old/Page.md',
+    });
+    await expect(access(source)).rejects.toThrow();
+    await expect(access(target)).resolves.toBeUndefined();
+    expect(store.getResource(notionId)).toMatchObject({
+      localPath: trashPath,
+      status: 'tombstoned',
+      inTrash: true,
+      trashReason: 'manual_reconcile',
+    });
+  });
+
+  it('複数の退避履歴からsourceと同じfileを選んでDBを合わせる', async () => {
+    const { root, store } = await fixture({ hash: 'old-hash' });
+    const source = join(root, 'Old/Page.md');
+    const historicalPath = '.trash/2026-07-11/Old/Page.md';
+    const linkedPath = '.trash/2026-07-12/Old/Page.md';
+    await put(root, 'Old/Page.md', markdown('old-hash'));
+    await put(root, historicalPath, markdown('old-hash'));
+    await mkdir(join(root, linkedPath, '..'), { recursive: true });
+    await link(source, join(root, linkedPath));
+
+    const findings = (await reconcileCrash({ managedRoot: root, store }))
+      .findings;
+    expect(findings).toContainEqual({
+      type: 'trash_relinked',
+      notionId,
+      path: linkedPath,
+    });
+    await expect(access(source)).rejects.toThrow();
+    await expect(access(join(root, historicalPath))).resolves.toBeUndefined();
+    expect(store.getResource(notionId)?.localPath).toBe(linkedPath);
+  });
+
+  it('dry-runでは同じfileの退避先とsourceを報告するだけでfileとDBを変更しない', async () => {
+    const { root, store } = await fixture({ hash: 'old-hash' });
+    const source = join(root, 'Old/Page.md');
+    const trashPath = '.trash/2026-07-12/Old/Page.md';
+    const target = join(root, trashPath);
+    await put(root, 'Old/Page.md', markdown('old-hash'));
+    await mkdir(join(target, '..'), { recursive: true });
+    await link(source, target);
+
+    const findings = (
+      await reconcileCrash({ managedRoot: root, store, dryRun: true })
+    ).findings;
+    expect(findings).toContainEqual({
+      type: 'trash_relinked',
+      notionId,
+      path: trashPath,
+    });
+    expect(findings).toContainEqual({
+      type: 'duplicate_removed',
+      notionId,
+      path: 'Old/Page.md',
+    });
+    await expect(access(source)).resolves.toBeUndefined();
+    await expect(access(target)).resolves.toBeUndefined();
+    expect(store.getResource(notionId)).toMatchObject({
+      localPath: 'Old/Page.md',
+      status: 'active',
+      inTrash: false,
+    });
+  });
+
+  it('同じfileのsourceを除去できなければ両方とDBを維持してstorage errorにする', async () => {
+    const { root, store } = await fixture({ hash: 'old-hash' });
+    const source = join(root, 'Old/Page.md');
+    const target = join(root, '.trash/2026-07-12/Old/Page.md');
+    await put(root, 'Old/Page.md', markdown('old-hash'));
+    await mkdir(join(target, '..'), { recursive: true });
+    await link(source, target);
+    const unlinkError = Object.assign(new Error('source is busy'), {
+      code: 'EBUSY',
+    });
+
+    await expect(
+      reconcileCrash({
+        managedRoot: root,
+        store,
+        unlink: () => Promise.reject(unlinkError),
+      }),
+    ).rejects.toMatchObject({
+      category: 'storage',
+      message: 'Trash recovery failed: source is busy',
+      cause: unlinkError,
+    });
+    await expect(access(source)).resolves.toBeUndefined();
+    await expect(access(target)).resolves.toBeUndefined();
+    expect(store.getResource(notionId)).toMatchObject({
+      localPath: 'Old/Page.md',
+      status: 'active',
+      inTrash: false,
+    });
+  });
+
+  it('退避fileだけが管理対象なら管理外sourceを残してDBを退避先へ合わせる', async () => {
+    const { root, store } = await fixture({ hash: 'old-hash' });
+    const trashPath = '.trash/2026-07-12/Old/Page.md';
+    await put(root, 'Old/Page.md', 'unmanaged local note');
+    await put(root, trashPath, markdown('old-hash'));
+
+    const findings = (await reconcileCrash({ managedRoot: root, store }))
+      .findings;
+    expect(findings).toEqual([
+      { type: 'trash_relinked', notionId, path: trashPath },
+    ]);
+    expect(await readFile(join(root, 'Old/Page.md'), 'utf8')).toBe(
+      'unmanaged local note',
+    );
+    expect(store.getResource(notionId)).toMatchObject({
+      localPath: trashPath,
+      status: 'tombstoned',
+      inTrash: true,
+      trashReason: 'manual_reconcile',
+    });
   });
 });
