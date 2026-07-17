@@ -2,6 +2,7 @@ import { posix } from 'node:path';
 import type { PlannedResourcePath } from '../domain/path-plan.js';
 import { DomainError } from '../errors.js';
 import { joinManagedPath } from '../filesystem/safe-path.js';
+import { outputPathCollisionKey } from './output-path-collision-key.js';
 
 interface StoredOutputPath {
   localPath?: string;
@@ -40,7 +41,7 @@ function plannedOwners(
 ): ReadonlyMap<string, ReadonlySet<string>> {
   const owners = new Map<string, Set<string>>();
   for (const path of paths) {
-    const key = normalizedPath(path.expectedPath);
+    const key = outputPathCollisionKey(path.expectedPath);
     const pathOwners = owners.get(key) ?? new Set<string>();
     pathOwners.add(path.notionId);
     owners.set(key, pathOwners);
@@ -50,10 +51,10 @@ function plannedOwners(
 
 function belongsToAnotherResource(
   owners: ReadonlyMap<string, ReadonlySet<string>>,
-  path: string,
+  key: string,
   notionId: string,
 ): boolean {
-  return [...(owners.get(path) ?? [])].some((owner) => owner !== notionId);
+  return [...(owners.get(key) ?? [])].some((owner) => owner !== notionId);
 }
 
 export async function allocateOutputPaths(
@@ -78,30 +79,32 @@ export async function allocateOutputPaths(
     let allocatedPath = expectedPath;
 
     if (currentPath && currentPath !== expectedPath) {
+      const expectedKey = outputPathCollisionKey(expectedPath);
       const targetCollision =
         belongsToAnotherResource(
           originalOwners,
-          expectedPath,
+          expectedKey,
           planned.notionId,
         ) ||
         belongsToAnotherResource(
           assignedOwners,
-          expectedPath,
+          expectedKey,
           planned.notionId,
         ) ||
         (await isLocalCollision(expectedPath, currentPath));
 
       if (targetCollision) {
         allocatedPath = collisionPath(expectedPath, planned.notionId);
+        const allocatedKey = outputPathCollisionKey(allocatedPath);
         const fallbackCollision =
           belongsToAnotherResource(
             originalOwners,
-            allocatedPath,
+            allocatedKey,
             planned.notionId,
           ) ||
           belongsToAnotherResource(
             assignedOwners,
-            allocatedPath,
+            allocatedKey,
             planned.notionId,
           ) ||
           (await isLocalCollision(allocatedPath, currentPath));
@@ -118,9 +121,10 @@ export async function allocateOutputPaths(
       }
     }
 
-    const owners = assignedOwners.get(allocatedPath) ?? new Set<string>();
+    const assignedKey = outputPathCollisionKey(allocatedPath);
+    const owners = assignedOwners.get(assignedKey) ?? new Set<string>();
     owners.add(planned.notionId);
-    assignedOwners.set(allocatedPath, owners);
+    assignedOwners.set(assignedKey, owners);
     const extension = posix.extname(allocatedPath);
     paths.push(
       allocatedPath === expectedPath
