@@ -821,6 +821,63 @@ describe('sync E2E', () => {
     ).resolves.toContain('# Task body');
   });
 
+  it('全件再同期でもData Sourceのindexを管理対象として再生成する', async () => {
+    const databaseId = '77777777-7777-4777-8777-777777777777';
+    const dataSourceId = '88888888-8888-4888-8888-888888888888';
+    const rowId = '99999999-9999-4999-8999-999999999999';
+    const app = await harness(
+      [
+        rootPage({
+          blocks: [
+            {
+              id: databaseId,
+              type: 'child_database',
+              child_database: { title: 'Tasks' },
+              parent: { type: 'page_id', page_id: ROOT_ID },
+              last_edited_time: '2026-07-12T00:00:00.000Z',
+              in_trash: false,
+            },
+          ],
+        }),
+      ],
+      {
+        dataSources: [
+          {
+            id: dataSourceId,
+            name: 'Tasks',
+            databaseId,
+            rows: [
+              {
+                id: rowId,
+                title: 'First task',
+                parentId: databaseId,
+                markdown: '# Task body\n',
+              },
+            ],
+          },
+        ],
+      },
+    );
+    await app.sync();
+
+    const result = await app.sync({ full: true });
+    const indexPath = join(app.managedRoot, 'Notes', 'Tasks', '_index.md');
+    const index = await readFile(indexPath, 'utf8');
+
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'UPDATE', notionId: databaseId }),
+    );
+    expect(index).toContain('managed_by: notion-to-obsidian');
+    expect(index).toContain(`notion_id: ${databaseId}`);
+    expect(index).toContain(`notion_data_source_id: ${dataSourceId}`);
+    expect(index).toContain('[[Notes/Tasks/First task|First task]]');
+    expect(app.store.getResource(databaseId)).toMatchObject({
+      localPath: 'Notes/Tasks/_index.md',
+      status: 'active',
+      missingCount: 0,
+    });
+  });
+
   it('Data Sourceのdatabase IDを指定すると行一覧のindexだけを出力する', async () => {
     const databaseId = '77777777-7777-4777-8777-777777777777';
     const dataSourceId = '88888888-8888-4888-8888-888888888888';
