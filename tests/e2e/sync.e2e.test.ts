@@ -72,6 +72,30 @@ describe('sync E2E', () => {
     );
   });
 
+  it('親ルートだけを同期する場合も親子関係にある同期ルートを拒否する', async () => {
+    const app = await harness([rootPage(), childPage()]);
+    app.config.notion.roots = [
+      { pageId: ROOT_ID, localName: 'Notes' },
+      { pageId: CHILD_ID, localName: 'Child root' },
+    ];
+
+    await expect(app.sync({ rootId: ROOT_ID })).rejects.toThrow(
+      new RegExp(`${CHILD_ID}.*${ROOT_ID}.*${CHILD_ID}.*Remove`, 'u'),
+    );
+  });
+
+  it('子ルートだけを同期する場合も親子関係にある同期ルートを拒否する', async () => {
+    const app = await harness([rootPage(), childPage()]);
+    app.config.notion.roots = [
+      { pageId: ROOT_ID, localName: 'Notes' },
+      { pageId: CHILD_ID, localName: 'Child root' },
+    ];
+
+    await expect(app.sync({ rootId: CHILD_ID })).rejects.toThrow(
+      new RegExp(`${CHILD_ID}.*${ROOT_ID}.*${CHILD_ID}.*Remove`, 'u'),
+    );
+  });
+
   it('Data Source行を別の同期ルートに指定した構成を重複ページと対処方法を示して拒否する', async () => {
     const databaseId = '77777777-7777-4777-8777-777777777777';
     const dataSourceId = '88888888-8888-4888-8888-888888888888';
@@ -387,6 +411,64 @@ describe('sync E2E', () => {
     );
     expect(await readFile(path, 'utf8')).toBe(content);
     expect((await stat(path)).mtimeMs).toBe(mtime);
+  });
+
+  it('指定ルートの同期を繰り返しても内容とmtimeを変更しない', async () => {
+    const app = await harness([
+      rootPage(),
+      rootPage({ id: ROOT_B_ID, title: 'Root B', markdown: '# Root B\n' }),
+    ]);
+    app.config.notion.roots = [
+      { pageId: ROOT_ID, localName: 'Notes A' },
+      { pageId: ROOT_B_ID, localName: 'Notes B' },
+    ];
+    await app.sync({ rootId: ROOT_ID });
+    const path = join(app.managedRoot, 'Notes A.md');
+    const content = await readFile(path, 'utf8');
+    const mtime = (await stat(path)).mtimeMs;
+
+    const result = await app.sync({ rootId: ROOT_ID });
+
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'UNCHANGED', notionId: ROOT_ID }),
+    );
+    expect(await readFile(path, 'utf8')).toBe(content);
+    expect((await stat(path)).mtimeMs).toBe(mtime);
+  });
+
+  it('指定ルートだけの同期では別ルートの不在ページを退避しない', async () => {
+    const rootB = rootPage({
+      id: ROOT_B_ID,
+      title: 'Root B',
+      markdown: '# Root B\n',
+    });
+    const app = await harness([
+      rootPage(),
+      rootB,
+      childPage({ parentId: ROOT_B_ID }),
+    ]);
+    app.config.notion.roots = [
+      { pageId: ROOT_ID, localName: 'Notes A' },
+      { pageId: ROOT_B_ID, localName: 'Notes B' },
+    ];
+    await app.sync();
+    const childPath = join(app.managedRoot, 'Notes B', 'Child.md');
+    app.setPages([rootPage(), rootB]);
+    const results = [];
+
+    for (let run = 0; run <= app.config.sync.deletion_grace_runs; run += 1) {
+      results.push(await app.sync({ rootId: ROOT_ID }));
+    }
+
+    expect(results.flatMap(({ actions }) => actions)).not.toContainEqual(
+      expect.objectContaining({ type: 'TRASH', notionId: CHILD_ID }),
+    );
+    expect(await exists(childPath)).toBe(true);
+    expect(await exists(join(app.managedRoot, '.trash'))).toBe(false);
+    expect(app.store.getResource(CHILD_ID)).toMatchObject({
+      status: 'active',
+      missingCount: 0,
+    });
   });
 
   it('3. 子ページだけの更新を反映する', async () => {

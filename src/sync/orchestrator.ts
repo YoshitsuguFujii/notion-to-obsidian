@@ -222,7 +222,8 @@ export async function runSyncOrchestrator(
       beganRun = true;
     }
 
-    const selectedRoots = config.notion.roots.filter(
+    const validationRoots = config.notion.roots;
+    const actionRoots = config.notion.roots.filter(
       (root) => !options.rootId || root.pageId === options.rootId,
     );
     const censuses: RootCensus[] = [];
@@ -233,7 +234,7 @@ export async function runSyncOrchestrator(
     >();
     const rowProperties = new Map<string, Record<string, unknown>>();
     const seenDataSources = new Set<string>();
-    for (const root of selectedRoots) {
+    for (const root of validationRoots) {
       const result = await dependencies.census(root.pageId);
       const pathResources = result.resources.map((resource) =>
         resource.notionId === root.pageId
@@ -298,7 +299,9 @@ export async function runSyncOrchestrator(
       const expanded = pathExpanded.filter(
         (resource) => !options.pageId || resource.notionId === options.pageId,
       );
-      censuses.push({ ...result, resources: expanded });
+      if (actionRoots.some(({ pageId }) => pageId === root.pageId)) {
+        censuses.push({ ...result, resources: expanded });
+      }
       pathCensuses.push({ ...result, resources: pathExpanded });
     }
 
@@ -698,7 +701,7 @@ export async function runSyncOrchestrator(
     });
 
     if (!dryRun) {
-      for (const root of selectedRoots) {
+      for (const root of actionRoots) {
         const census = censuses.find(({ rootId }) => rootId === root.pageId);
         if (!census) continue;
         dependencies.store.upsertRoot({
