@@ -1,5 +1,5 @@
 import { access, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { NodeHttpDownloader } from '../../src/assets/http-downloader.js';
 import { retrieveMarkdownWithFallback } from '../../src/notion/markdown.js';
@@ -734,6 +734,42 @@ describe('sync E2E', () => {
     expect(app.store.listAssets()).toHaveLength(1);
   });
 
+  it('Plan後にCREATE先へ管理外ファイルが現れた場合は同期済みにせず停止する', async () => {
+    const assetUrl = 'https://files.example/race.png?signature=temporary';
+    const blockId = '67676767-6767-4676-8676-676767676767';
+    let markdownTarget = '';
+    const unmanaged = '# Personal note\n';
+    const app = await harness(
+      [
+        rootPage({
+          markdown: `![Race](${assetUrl})`,
+          blocks: [
+            {
+              id: blockId,
+              type: 'image',
+              image: { type: 'file', file: { url: assetUrl }, caption: [] },
+            },
+          ],
+        }),
+      ],
+      {
+        downloadAsset: async ({ destination }) => {
+          await mkdir(dirname(destination), { recursive: true });
+          await writeFile(destination, 'asset-content');
+          await writeFile(markdownTarget, unmanaged);
+          return { size: 13, contentType: 'image/png', etag: 'race-etag' };
+        },
+      },
+    );
+    markdownTarget = join(app.managedRoot, 'Notes.md');
+
+    await expect(app.sync()).rejects.toMatchObject({ category: 'safety' });
+
+    expect(await readFile(markdownTarget, 'utf8')).toBe(unmanaged);
+    expect(app.store.getResource(ROOT_ID)).toBeUndefined();
+    expect(app.store.getLatestRun()?.success).toBe(false);
+  });
+
   it('child databaseをData Sourceのindexと行ページへ同期する', async () => {
     const databaseId = '77777777-7777-4777-8777-777777777777';
     const dataSourceId = '88888888-8888-4888-8888-888888888888';
@@ -783,6 +819,63 @@ describe('sync E2E', () => {
         'utf8',
       ),
     ).resolves.toContain('# Task body');
+  });
+
+  it('全件再同期でもData Sourceのindexを管理対象として再生成する', async () => {
+    const databaseId = '77777777-7777-4777-8777-777777777777';
+    const dataSourceId = '88888888-8888-4888-8888-888888888888';
+    const rowId = '99999999-9999-4999-8999-999999999999';
+    const app = await harness(
+      [
+        rootPage({
+          blocks: [
+            {
+              id: databaseId,
+              type: 'child_database',
+              child_database: { title: 'Tasks' },
+              parent: { type: 'page_id', page_id: ROOT_ID },
+              last_edited_time: '2026-07-12T00:00:00.000Z',
+              in_trash: false,
+            },
+          ],
+        }),
+      ],
+      {
+        dataSources: [
+          {
+            id: dataSourceId,
+            name: 'Tasks',
+            databaseId,
+            rows: [
+              {
+                id: rowId,
+                title: 'First task',
+                parentId: databaseId,
+                markdown: '# Task body\n',
+              },
+            ],
+          },
+        ],
+      },
+    );
+    await app.sync();
+
+    const result = await app.sync({ full: true });
+    const indexPath = join(app.managedRoot, 'Notes', 'Tasks', '_index.md');
+    const index = await readFile(indexPath, 'utf8');
+
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'UPDATE', notionId: databaseId }),
+    );
+    expect(index).toContain('managed_by: notion-to-obsidian');
+    expect(index).toContain(`notion_id: ${databaseId}`);
+    expect(index).toContain(`notion_data_source_id: ${dataSourceId}`);
+    expect(index).toContain('[[Notes/Tasks/First task|First task]]');
+    expect(app.store.getResource(databaseId)).toMatchObject({
+      localPath: 'Notes/Tasks/_index.md',
+      status: 'active',
+      missingCount: 0,
+    });
   });
 
   it('Data Sourceのdatabase IDを指定すると行一覧のindexだけを出力する', async () => {

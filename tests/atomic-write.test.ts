@@ -1,4 +1,13 @@
-import { mkdtemp, readFile, readdir, stat, symlink } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  stat,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -10,6 +19,16 @@ async function temporaryPath(): Promise<{ directory: string; path: string }> {
   const directory = await mkdtemp(join(tmpdir(), 'notion-atomic-'));
   directories.push(directory);
   return { directory, path: join(directory, 'nested', 'Page.md') };
+}
+
+const notionId = '11111111-1111-4111-8111-111111111111';
+
+function managedMarkdown(body: string): string {
+  return `---\nmanaged_by: notion-to-obsidian\nnotion_id: ${notionId}\n---\n${body}`;
+}
+
+function fileSystemError(code: string, message: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(message), { code });
 }
 
 afterEach(async () => {
@@ -69,5 +88,204 @@ describe('writeMarkdownAtomic', () => {
       }),
     ).rejects.toMatchObject({ category: 'safety' });
     expect(await readdir(outside)).toEqual([]);
+  });
+
+  it('対象が不在なら管理対象Markdownを排他的に作成する', async () => {
+    const { directory, path } = await temporaryPath();
+    const content = managedMarkdown('Body');
+
+    await expect(
+      writeMarkdownAtomic(path, content, {
+        refuseUnmanagedTarget: true,
+        managedRoot: directory,
+        stored: undefined,
+      }),
+    ).resolves.toBe('written');
+
+    expect(await readFile(path, 'utf8')).toBe(content);
+  });
+
+  it('対象の確認後に管理外ファイルが現れた場合は内容を保持して停止する', async () => {
+    const { directory, path } = await temporaryPath();
+    const unmanaged = 'Personal note';
+
+    await expect(
+      writeMarkdownAtomic(path, managedMarkdown('Body'), {
+        refuseUnmanagedTarget: true,
+        managedRoot: directory,
+        stored: undefined,
+        temporaryId: () => 'race',
+        link: async (_source, target) => {
+          await writeFile(target, unmanaged);
+          throw fileSystemError('EEXIST', 'target appeared');
+        },
+      }),
+    ).rejects.toMatchObject({ category: 'safety' });
+
+    expect(await readFile(path, 'utf8')).toBe(unmanaged);
+    expect(await readdir(join(path, '..'))).toEqual(['Page.md']);
+  });
+
+  it('生成予定と同じ内容の管理外ファイルも取り込まず停止する', async () => {
+    const { directory, path } = await temporaryPath();
+    const content = managedMarkdown('Body');
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, content);
+
+    await expect(
+      writeMarkdownAtomic(path, content, {
+        refuseUnmanagedTarget: true,
+        managedRoot: directory,
+        stored: undefined,
+      }),
+    ).rejects.toMatchObject({ category: 'safety' });
+
+    expect(await readFile(path, 'utf8')).toBe(content);
+  });
+
+  it('対象がdirectoryの場合は中身を変更せず停止する', async () => {
+    const { directory, path } = await temporaryPath();
+    await mkdir(path, { recursive: true });
+    await writeFile(join(path, 'kept.txt'), 'Keep');
+
+    await expect(
+      writeMarkdownAtomic(path, managedMarkdown('Body'), {
+        refuseUnmanagedTarget: true,
+        managedRoot: directory,
+        stored: undefined,
+      }),
+    ).rejects.toMatchObject({ category: 'safety' });
+
+    expect(await readFile(join(path, 'kept.txt'), 'utf8')).toBe('Keep');
+  });
+
+  it('管理対象ファイルを読めない場合は内容を保持してstorage errorを返す', async () => {
+    const { directory, path } = await temporaryPath();
+    const existing = managedMarkdown('Old body');
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, existing);
+
+    await expect(
+      writeMarkdownAtomic(path, managedMarkdown('New body'), {
+        refuseUnmanagedTarget: true,
+        managedRoot: directory,
+        stored: { notionId, localPath: 'nested/Page.md' },
+        readFile: () =>
+          Promise.reject(fileSystemError('EACCES', 'permission denied')),
+      }),
+    ).rejects.toMatchObject({ category: 'storage' });
+
+    expect(await readFile(path, 'utf8')).toBe(existing);
+  });
+
+  it('確定後に一時ファイルを除去できなくても書き込み成功として扱う', async () => {
+    const { directory, path } = await temporaryPath();
+    const content = managedMarkdown('Body');
+
+    await expect(
+      writeMarkdownAtomic(path, content, {
+        refuseUnmanagedTarget: true,
+        managedRoot: directory,
+        stored: undefined,
+        temporaryId: () => 'kept',
+        unlink: () =>
+          Promise.reject(fileSystemError('EACCES', 'cannot remove temp')),
+      }),
+    ).resolves.toBe('written');
+
+    expect(await readFile(path, 'utf8')).toBe(content);
+    expect(
+      await readFile(join(directory, 'nested', '.Page.md.kept.tmp'), 'utf8'),
+    ).toBe(content);
+  });
+
+  it('一時ファイルの除去が一時的に失敗した場合は再試行して後始末する', async () => {
+    const { directory, path } = await temporaryPath();
+    let unavailable = true;
+
+    await expect(
+      writeMarkdownAtomic(path, managedMarkdown('Body'), {
+        refuseUnmanagedTarget: true,
+        managedRoot: directory,
+        stored: undefined,
+        temporaryId: () => 'retried',
+        unlink: async (temporaryPath) => {
+          if (unavailable) {
+            unavailable = false;
+            throw fileSystemError('EBUSY', 'temporarily busy');
+          }
+          await unlink(temporaryPath);
+        },
+      }),
+    ).resolves.toBe('written');
+
+    expect(await readdir(join(path, '..'))).toEqual(['Page.md']);
+  });
+
+  it('管理対象ファイルが同じ内容ならmtimeを維持し差分があれば置換する', async () => {
+    const { directory, path } = await temporaryPath();
+    const existing = managedMarkdown('Old body');
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, existing);
+    const before = (await stat(path)).mtimeMs;
+    const options = {
+      refuseUnmanagedTarget: true as const,
+      managedRoot: directory,
+      stored: { notionId, localPath: 'nested/Page.md' },
+    };
+
+    await expect(writeMarkdownAtomic(path, existing, options)).resolves.toBe(
+      'unchanged',
+    );
+    expect((await stat(path)).mtimeMs).toBe(before);
+
+    const updated = managedMarkdown('New body');
+    await expect(writeMarkdownAtomic(path, updated, options)).resolves.toBe(
+      'written',
+    );
+    expect(await readFile(path, 'utf8')).toBe(updated);
+  });
+
+  it('管理情報と一致しない対象は内容を保持して停止する', async () => {
+    const { directory, path } = await temporaryPath();
+    const existing = managedMarkdown('Personal copy');
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, existing);
+
+    await expect(
+      writeMarkdownAtomic(path, managedMarkdown('Synced body'), {
+        refuseUnmanagedTarget: true,
+        managedRoot: directory,
+        stored: { notionId, localPath: 'another/Page.md' },
+      }),
+    ).rejects.toMatchObject({ category: 'safety' });
+
+    expect(await readFile(path, 'utf8')).toBe(existing);
+  });
+
+  it('排他確保の分類外エラーはstorage errorとして返し対象を作らない', async () => {
+    const { directory, path } = await temporaryPath();
+
+    await expect(
+      writeMarkdownAtomic(path, managedMarkdown('Body'), {
+        refuseUnmanagedTarget: true,
+        managedRoot: directory,
+        stored: undefined,
+        temporaryId: () => 'failed',
+        link: () => Promise.reject(fileSystemError('EIO', 'link failed')),
+      }),
+    ).rejects.toMatchObject({ category: 'storage' });
+
+    expect(await readdir(join(path, '..'))).toEqual([]);
+  });
+
+  it('保護オプションを省略した場合は既存対象を置換する', async () => {
+    const { path } = await temporaryPath();
+    await writeMarkdownAtomic(path, 'Old body');
+
+    await expect(writeMarkdownAtomic(path, 'New body')).resolves.toBe(
+      'written',
+    );
+    expect(await readFile(path, 'utf8')).toBe('New body');
   });
 });
