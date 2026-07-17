@@ -1,18 +1,15 @@
 import {
   access,
-  copyFile as nodeCopyFile,
-  link as nodeLink,
   lstat,
   mkdir,
   readFile,
   readdir,
-  rm,
   rmdir,
   unlink as nodeUnlink,
 } from 'node:fs/promises';
-import { constants } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DomainError, InfraError } from '../errors.js';
+import { claimTargetExclusively } from './exclusive-target-claim.js';
 import { assertNoSymlinkEscape, joinManagedPath } from './safe-path.js';
 import {
   inspectManagementMarker,
@@ -45,26 +42,6 @@ const inspector = {
     }
   },
 };
-
-const copyFallbackCodes = new Set([
-  'EXDEV',
-  'ENOTSUP',
-  'EOPNOTSUPP',
-  'EPERM',
-  'EMLINK',
-]);
-
-function errorCode(error: unknown): string | undefined {
-  return (error as NodeJS.ErrnoException).code;
-}
-
-function targetExistsError(cause: unknown): DomainError {
-  return new DomainError(
-    'safety',
-    'Move target already exists; run plan again before syncing',
-    { cause },
-  );
-}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -114,24 +91,14 @@ export async function moveManagedFile(
   await mkdir(dirname(target), { recursive: true });
 
   try {
-    try {
-      await (options.link ?? nodeLink)(source, target);
-    } catch (linkCause) {
-      if (errorCode(linkCause) === 'EEXIST') throw targetExistsError(linkCause);
-      if (!copyFallbackCodes.has(errorCode(linkCause) ?? '')) throw linkCause;
-      try {
-        await (options.copyFile ?? nodeCopyFile)(
-          source,
-          target,
-          constants.COPYFILE_EXCL,
-        );
-      } catch (copyCause) {
-        if (errorCode(copyCause) === 'EEXIST')
-          throw targetExistsError(copyCause);
-        await rm(target, { force: true });
-        throw copyCause;
-      }
-    }
+    await claimTargetExclusively({
+      sourcePath: source,
+      targetPath: target,
+      targetExistsMessage:
+        'Move target already exists; run plan again before syncing',
+      ...(options.link ? { link: options.link } : {}),
+      ...(options.copyFile ? { copyFile: options.copyFile } : {}),
+    });
     await (options.unlink ?? nodeUnlink)(source);
     await options.onMoved?.(targetPath);
     await removeEmptyParent(options.managedRoot, source);
