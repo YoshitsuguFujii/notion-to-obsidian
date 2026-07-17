@@ -1,5 +1,5 @@
 import { access, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { NodeHttpDownloader } from '../../src/assets/http-downloader.js';
 import { retrieveMarkdownWithFallback } from '../../src/notion/markdown.js';
@@ -732,6 +732,42 @@ describe('sync E2E', () => {
     expect(markdown).toContain(`_assets/${ROOT_ID}/${blockId}--photo.png`);
     expect(markdown).not.toContain('signature=temporary');
     expect(app.store.listAssets()).toHaveLength(1);
+  });
+
+  it('Plan後にCREATE先へ管理外ファイルが現れた場合は同期済みにせず停止する', async () => {
+    const assetUrl = 'https://files.example/race.png?signature=temporary';
+    const blockId = '67676767-6767-4676-8676-676767676767';
+    let markdownTarget = '';
+    const unmanaged = '# Personal note\n';
+    const app = await harness(
+      [
+        rootPage({
+          markdown: `![Race](${assetUrl})`,
+          blocks: [
+            {
+              id: blockId,
+              type: 'image',
+              image: { type: 'file', file: { url: assetUrl }, caption: [] },
+            },
+          ],
+        }),
+      ],
+      {
+        downloadAsset: async ({ destination }) => {
+          await mkdir(dirname(destination), { recursive: true });
+          await writeFile(destination, 'asset-content');
+          await writeFile(markdownTarget, unmanaged);
+          return { size: 13, contentType: 'image/png', etag: 'race-etag' };
+        },
+      },
+    );
+    markdownTarget = join(app.managedRoot, 'Notes.md');
+
+    await expect(app.sync()).rejects.toMatchObject({ category: 'safety' });
+
+    expect(await readFile(markdownTarget, 'utf8')).toBe(unmanaged);
+    expect(app.store.getResource(ROOT_ID)).toBeUndefined();
+    expect(app.store.getLatestRun()?.success).toBe(false);
   });
 
   it('child databaseをData Sourceのindexと行ページへ同期する', async () => {

@@ -789,9 +789,13 @@ export async function runSyncOrchestrator(
           await writeMarkdownAtomic(
             absolutePath,
             `${frontmatter}${item.body}`,
-            {
-              managedRoot: config.obsidian.managedPath,
-            },
+            type === 'CREATE' || type === 'UPDATE'
+              ? {
+                  refuseUnmanagedTarget: true,
+                  managedRoot: config.obsidian.managedPath,
+                  stored: item.stored,
+                }
+              : { managedRoot: config.obsidian.managedPath },
           );
         }
         for (const sidecar of item.sidecars) {
