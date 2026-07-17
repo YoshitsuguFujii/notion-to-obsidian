@@ -147,6 +147,12 @@ node --env-file=.env dist/cli/index.js sync --config config.yaml --full
 node --env-file=.env dist/cli/index.js sync --config config.yaml --page-id 00000000-0000-0000-0000-000000000000
 ```
 
+`--root`は指定したルートだけを同期し、本文取得・Plan / Apply・削除判定の対象も指定ルートに限定します。ただし、ルートの重複検査と内部リンクの解決先を全体同期と同じ精度で決めるため、全設定ルートをcensusし、Data Source行も展開します。単独同期でもこの分のNotion API呼び出しが発生しますが、出力パスとルートの所属関係を正しく保つために必要です。親子で重なるルートが設定されている場合は、`--root`実行でも同期を停止します。
+
+```sh
+node --env-file=.env dist/cli/index.js sync --config config.yaml --root 00000000-0000-0000-0000-000000000000
+```
+
 ## 状態確認
 
 ```sh
