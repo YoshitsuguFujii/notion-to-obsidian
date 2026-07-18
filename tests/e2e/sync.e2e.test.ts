@@ -1340,6 +1340,62 @@ describe('sync E2E', () => {
     expect((await stat(markdownPath)).mtimeMs).toBe(markdownMtime);
   });
 
+  it('DB記録がないunsupported sidecarを保持してresourceを取り込まない', async () => {
+    const unsupportedId = '88888888-8888-4888-8888-888888888888';
+    const block = {
+      id: unsupportedId,
+      type: 'future_block',
+      future_block: { answer: 42 },
+    };
+    const app = await harness([
+      rootPage({
+        markdown: '<unknown>',
+        markdownTruncated: true,
+        blocks: [block],
+      }),
+    ]);
+    const sidecarPath = join(
+      app.managedRoot,
+      '_unsupported',
+      ROOT_ID,
+      `${unsupportedId}.json`,
+    );
+    const content = `${JSON.stringify(
+      { type: 'future_block', id: unsupportedId, payload: block },
+      null,
+      2,
+    )}\n`;
+    await mkdir(join(sidecarPath, '..'), { recursive: true });
+    await writeFile(sidecarPath, content);
+
+    await expect(app.sync()).rejects.toMatchObject({ category: 'safety' });
+
+    expect(await readFile(sidecarPath, 'utf8')).toBe(content);
+    expect(app.store.getResource(ROOT_ID)).toBeUndefined();
+  });
+
+  it('同じIDと内容のunsupported sidecarを1ファイルに集約して同期する', async () => {
+    const unsupportedId = '88888888-8888-4888-8888-888888888888';
+    const block = { id: unsupportedId, type: 'future_block', future_block: {} };
+    const app = await harness([
+      rootPage({
+        markdown: '<unknown>',
+        markdownTruncated: true,
+        blocks: [block, { ...block }],
+      }),
+    ]);
+
+    await expect(app.sync()).resolves.toMatchObject({ partial: false });
+
+    await expect(
+      readFile(
+        join(app.managedRoot, '_unsupported', ROOT_ID, `${unsupportedId}.json`),
+        'utf8',
+      ),
+    ).resolves.toContain(`"id": "${unsupportedId}"`);
+    expect(app.store.getResource(ROOT_ID)).toMatchObject({ status: 'active' });
+  });
+
   it('17. dry-runでファイルとDBを変更しない', async () => {
     const app = await harness([rootPage()]);
     const beforeResources = app.store.listResources();
