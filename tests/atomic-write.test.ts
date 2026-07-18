@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { DomainError } from '../src/errors.js';
 import { writeMarkdownAtomic } from '../src/filesystem/atomic-write.js';
 
 const directories: string[] = [];
@@ -348,8 +349,8 @@ describe('writeMarkdownAtomic', () => {
     await mkdir(join(path, '..'), { recursive: true });
     await writeFile(path, unmanaged);
 
-    await expect(
-      writeMarkdownAtomic(path, unsupportedSidecar(), {
+    try {
+      await writeMarkdownAtomic(path, unsupportedSidecar(), {
         managedRoot: directory,
         ownership: {
           kind: 'unsupported-sidecar',
@@ -357,11 +358,14 @@ describe('writeMarkdownAtomic', () => {
           expectedSidecarId: sidecarId,
           storedPage: { notionId },
         },
-      }),
-    ).rejects.toMatchObject({
-      category: 'safety',
-      message: expect.stringContaining('Unsupported sidecar target'),
-    });
+      });
+      throw new Error('expected ownership rejection');
+    } catch (error) {
+      expect(error).toBeInstanceOf(DomainError);
+      if (!(error instanceof DomainError)) throw error;
+      expect(error.category).toBe('safety');
+      expect(error.message).toContain('Unsupported sidecar target');
+    }
 
     expect(await readFile(path, 'utf8')).toBe(unmanaged);
   });
