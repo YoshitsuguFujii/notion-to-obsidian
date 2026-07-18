@@ -19,6 +19,7 @@ import { assertNoSymlinkEscape } from './safe-path.js';
 import {
   inspectUnsupportedSidecarTarget,
   type StoredPageIdentity,
+  type UnsupportedSidecarTargetInspection,
 } from './unsupported-sidecar-target.js';
 
 interface BaseAtomicWriteOptions {
@@ -122,9 +123,7 @@ export async function writeMarkdownAtomic(
         options.ownership.kind === 'markdown-marker'
           ? 'Markdown target'
           : 'Unsupported sidecar target';
-      let inspection:
-        | { kind: 'absent' | 'unmanaged' | 'not-regular' | 'unreadable' }
-        | { kind: 'owned'; content: string };
+      let inspection: UnsupportedSidecarTargetInspection;
       if (options.ownership.kind === 'unsupported-sidecar') {
         inspection = await inspectUnsupportedSidecarTarget(
           {
