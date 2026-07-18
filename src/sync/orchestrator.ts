@@ -849,7 +849,6 @@ export async function runSyncOrchestrator(
           if (assetPlan && dependencies.downloadAsset) {
             const processed = await applyPlannedPageAssets(
               {
-                markdown: item.body,
                 managedRoot: config.obsidian.managedPath,
                 runId,
                 now: startedAt,

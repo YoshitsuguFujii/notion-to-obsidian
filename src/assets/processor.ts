@@ -252,7 +252,7 @@ export async function planPageAssets(
 export async function applyPlannedPageAssets(
   input: Pick<
     ProcessAssetsInput,
-    'markdown' | 'managedRoot' | 'runId' | 'now' | 'maximumBytes'
+    'managedRoot' | 'runId' | 'now' | 'maximumBytes'
   >,
   plan: PlannedPageAssets,
   dependencies: Pick<ProcessAssetsDependencies, 'download'>,

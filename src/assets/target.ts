@@ -125,7 +125,6 @@ export async function commitAssetDownload(input: {
     const previous = target.previous;
     const couldMatchDesired = current.size === desiredSize;
     const couldMatchPrevious =
-      previous?.contentHash !== null &&
       previous?.contentHash !== undefined &&
       previous.size !== undefined &&
       current.size === previous.size;
