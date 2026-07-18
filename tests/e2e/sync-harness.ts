@@ -13,6 +13,7 @@ import { fetchDataSourceRows } from '../../src/notion/data-sources.js';
 import { retrieveMarkdownWithFallback } from '../../src/notion/markdown.js';
 import type { NotionClient } from '../../src/notion/types.js';
 import { SqliteStateStore } from '../../src/storage/sqlite-store.js';
+import type { StateStore } from '../../src/storage/state-store.js';
 import { reconcileCrash } from '../../src/sync/reconcile-crash.js';
 import {
   runSyncOrchestrator,
@@ -89,11 +90,13 @@ export async function createSyncHarness(
     downloadAsset?: (request: DownloadRequest) => Promise<DownloadResult>;
     dataSources?: MockDataSource[];
     blockChildren?: Readonly<Record<string, Array<Record<string, unknown>>>>;
+    storeWrapper?: (store: SqliteStateStore) => StateStore;
   } = {},
 ): Promise<SyncHarness> {
   const vault = await mkdtemp(join(tmpdir(), 'notion-e2e-'));
   const managedRoot = join(vault, 'Mirror');
   const store = new SqliteStateStore(join(vault, 'state.db'));
+  const stateStore = harnessOptions.storeWrapper?.(store) ?? store;
   let pages = new Map(initialPages.map((page) => [page.id, page]));
   let rootFailure = false;
   let searchFailure = false;
@@ -218,7 +221,7 @@ export async function createSyncHarness(
     },
     sync(options = {}) {
       return runSyncOrchestrator(config, options, {
-        store,
+        store: stateStore,
         lock,
         census: (rootId) => censusRoot(client, rootId),
         retrieveContent: (pageId) =>
@@ -231,7 +234,13 @@ export async function createSyncHarness(
           (async ({ destination }) => {
             await mkdir(dirname(destination), { recursive: true });
             await writeFile(destination, 'asset-content');
-            return { size: 13, contentType: 'image/png', etag: 'e2e-etag' };
+            return {
+              size: 13,
+              contentHash:
+                '06692694f09c22857b9c8d83e5b0389bdecdf754c011778af2f72a75b8726fb4',
+              contentType: 'image/png',
+              etag: 'e2e-etag',
+            };
           }),
         now: () => '2026-07-12T01:00:00.000Z',
         runId: () => `e2e-run-${++run}`,

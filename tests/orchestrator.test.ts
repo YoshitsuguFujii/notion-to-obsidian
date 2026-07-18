@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -377,7 +378,13 @@ describe('runSyncOrchestrator', () => {
         const { mkdir, writeFile } = await import('node:fs/promises');
         await mkdir(join(destination, '..'), { recursive: true });
         await writeFile(destination, 'image');
-        return { size: 5, contentType: 'image/png', etag: 'etag' };
+        return {
+          size: 5,
+          contentHash:
+            '6105d6cc76af400325e94d588ce511be5bfdbb73b437dc51eca43917d7a43e3d',
+          contentType: 'image/png',
+          etag: 'etag',
+        };
       },
     );
     const dependencies = {
@@ -415,11 +422,50 @@ describe('runSyncOrchestrator', () => {
     expect(markdown).toContain(`_assets/${rootId}/${blockId}--photo.png`);
     expect(store.getAsset(`${rootId}:${blockId}`)).toMatchObject({
       etag: 'etag',
+      contentHash:
+        '6105d6cc76af400325e94d588ce511be5bfdbb73b437dc51eca43917d7a43e3d',
     });
     const second = await runSyncOrchestrator(config, {}, dependencies);
     expect(second.actions).toContainEqual(
       expect.objectContaining({ type: 'UNCHANGED', notionId: rootId }),
     );
+    expect(downloadAsset).toHaveBeenCalledTimes(1);
+    expect(second.actions).not.toContainEqual(
+      expect.objectContaining({ type: 'ASSET_DEFERRED' }),
+    );
+
+    const assetTarget = join(
+      config.obsidian.managedPath,
+      `_assets/${rootId}/${blockId}--photo.png`,
+    );
+    await rm(assetTarget);
+    const unchangedDryRun = await runSyncOrchestrator(
+      config,
+      { dryRun: true },
+      dependencies,
+    );
+    expect(unchangedDryRun.actions).toContainEqual(
+      expect.objectContaining({ type: 'UNCHANGED', notionId: rootId }),
+    );
+    expect(unchangedDryRun.actions).not.toContainEqual(
+      expect.objectContaining({ type: 'ASSET_DEFERRED' }),
+    );
+    expect(downloadAsset).toHaveBeenCalledTimes(1);
+
+    await writeFile(assetTarget, 'manual replacement');
+    census.resources[0]!.lastEditedTime = '2026-07-12T02:00:00.000Z';
+    const dryRun = await runSyncOrchestrator(
+      config,
+      { dryRun: true, strict: true },
+      dependencies,
+    );
+    expect(dryRun.actions).toContainEqual({
+      type: 'ASSET_DEFERRED',
+      stableKey: `${rootId}:${blockId}`,
+      path: `_assets/${rootId}/${blockId}--photo.png`,
+    });
+    expect(dryRun.partialFailure).toBe(false);
+    expect(dryRun.counts).toMatchObject({ update: 1, error: 0 });
     expect(downloadAsset).toHaveBeenCalledTimes(1);
   });
 

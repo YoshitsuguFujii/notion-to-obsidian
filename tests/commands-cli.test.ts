@@ -190,7 +190,16 @@ describe('CLI', () => {
   it('sync optionsをhandlerへ渡しJSONを出力する', async () => {
     const write = vi.fn();
     const sync = vi.fn(() =>
-      Promise.resolve({ ok: true, actions: [{ type: 'CREATE' }] }),
+      Promise.resolve({
+        ok: true,
+        actions: [
+          {
+            type: 'ASSET_DEFERRED',
+            stableKey: 'page:block',
+            path: '_assets/page/block--photo.png',
+          },
+        ],
+      }),
     );
     const program = createProgram({ write, handlers: { sync } });
     await program.parseAsync([
@@ -224,7 +233,42 @@ describe('CLI', () => {
     );
     expect(JSON.parse(write.mock.calls[0]![0] as string)).toMatchObject({
       ok: true,
-      actions: [{ type: 'CREATE' }],
+      actions: [
+        {
+          type: 'ASSET_DEFERRED',
+          stableKey: 'page:block',
+          path: '_assets/page/block--photo.png',
+        },
+      ],
     });
+  });
+
+  it('dry-runで判断を延期したアセットを通常出力に示す', async () => {
+    const write = vi.fn();
+    const program = createProgram({
+      write,
+      handlers: {
+        sync: () => ({
+          ok: true,
+          actions: [
+            {
+              type: 'ASSET_DEFERRED',
+              stableKey: 'page:block',
+              path: '_assets/page/block--photo.png',
+            },
+          ],
+        }),
+      },
+    });
+
+    await program.parseAsync(['node', 'cli', 'sync', '--dry-run']);
+
+    expect(write).toHaveBeenCalledWith(
+      `${JSON.stringify({
+        type: 'ASSET_DEFERRED',
+        stableKey: 'page:block',
+        path: '_assets/page/block--photo.png',
+      })}\n`,
+    );
   });
 });

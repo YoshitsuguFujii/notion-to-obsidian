@@ -1,7 +1,9 @@
 import { access, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { NodeHttpDownloader } from '../../src/assets/http-downloader.js';
+import type { StateStore } from '../../src/storage/state-store.js';
 import { retrieveMarkdownWithFallback } from '../../src/notion/markdown.js';
 import { runDoctor } from '../../src/commands/doctor.js';
 import { runStatus } from '../../src/commands/status.js';
@@ -757,7 +759,13 @@ describe('sync E2E', () => {
           await mkdir(dirname(destination), { recursive: true });
           await writeFile(destination, 'asset-content');
           await writeFile(markdownTarget, unmanaged);
-          return { size: 13, contentType: 'image/png', etag: 'race-etag' };
+          return {
+            size: 13,
+            contentHash:
+              '06692694f09c22857b9c8d83e5b0389bdecdf754c011778af2f72a75b8726fb4',
+            contentType: 'image/png',
+            etag: 'race-etag',
+          };
         },
       },
     );
@@ -1115,6 +1123,103 @@ describe('sync E2E', () => {
     const markdown = await readFile(join(app.managedRoot, 'Notes.md'), 'utf8');
     expect(markdown).toContain(assetUrl);
     expect(app.store.listAssets()).toEqual([]);
+  });
+
+  it('アセット状態の保存失敗時はページ状態も戻し、再実行でファイルとDBを整合させる', async () => {
+    const assetUrl = 'https://files.example/transaction.png';
+    const blockId = 'abababab-abab-4bab-8bab-abababababab';
+    let content = 'old-asset';
+    let failNextAssetUpsert = false;
+    const digest = (value: string) =>
+      createHash('sha256').update(value).digest('hex');
+    const page = (lastEditedTime: string) =>
+      rootPage({
+        lastEditedTime,
+        markdown: `![Transaction](${assetUrl})`,
+        blocks: [
+          {
+            id: blockId,
+            type: 'image',
+            image: { type: 'file', file: { url: assetUrl }, caption: [] },
+          },
+        ],
+      });
+    const app = await harness([page('2026-07-12T00:00:00.000Z')], {
+      downloadAsset: async ({ destination }) => {
+        await mkdir(dirname(destination), { recursive: true });
+        await writeFile(destination, content);
+        return {
+          size: Buffer.byteLength(content),
+          contentHash: digest(content),
+          contentType: 'image/png',
+        };
+      },
+      storeWrapper: (store): StateStore => ({
+        beginRun: (value) => store.beginRun(value),
+        getRun: (value) => store.getRun(value),
+        finishRun: (value) => store.finishRun(value),
+        getLatestRun: () => store.getLatestRun(),
+        upsertRoot: (value) => store.upsertRoot(value),
+        getRoot: (value) => store.getRoot(value),
+        listRoots: () => store.listRoots(),
+        upsertResource: (value) => store.upsertResource(value),
+        updateResourceMissingState: (id, value) =>
+          store.updateResourceMissingState(id, value),
+        getResource: (value) => store.getResource(value),
+        listResources: () => store.listResources(),
+        listUnfinishedRuns: () => store.listUnfinishedRuns(),
+        upsertAsset: (asset) => {
+          if (failNextAssetUpsert) {
+            failNextAssetUpsert = false;
+            throw new Error('injected asset upsert failure');
+          }
+          store.upsertAsset(asset);
+        },
+        getAsset: (value) => store.getAsset(value),
+        listAssets: () => store.listAssets(),
+        insertWarning: (value) => store.insertWarning(value),
+        listWarnings: (value) => store.listWarnings(value),
+        transaction: (work) => store.transaction(work),
+        close: () => store.close(),
+      }),
+    });
+
+    await app.sync();
+    const stableKey = `${ROOT_ID}:${blockId}`;
+    const assetPath = app.store.getAsset(stableKey)!.localPath;
+    const oldResource = app.store.getResource(ROOT_ID)!;
+    expect(app.store.getAsset(stableKey)?.contentHash).toBe(
+      digest('old-asset'),
+    );
+
+    content = 'new-asset';
+    app.setPages([page('2026-07-12T02:00:00.000Z')]);
+    failNextAssetUpsert = true;
+    await expect(app.sync()).rejects.toThrow('injected asset upsert failure');
+
+    expect(await readFile(join(app.managedRoot, assetPath), 'utf8')).toBe(
+      'new-asset',
+    );
+    expect(app.store.getResource(ROOT_ID)?.lastEditedTime).toBe(
+      oldResource.lastEditedTime,
+    );
+    expect(app.store.getAsset(stableKey)?.contentHash).toBe(
+      digest('old-asset'),
+    );
+
+    const recovered = await app.sync();
+    expect(recovered.actions).toContainEqual(
+      expect.objectContaining({ type: 'UPDATE', notionId: ROOT_ID }),
+    );
+    expect(recovered.actions).not.toContainEqual(
+      expect.objectContaining({ type: 'UNCHANGED', notionId: ROOT_ID }),
+    );
+    expect(app.store.getResource(ROOT_ID)?.lastEditedTime).toBe(
+      '2026-07-12T02:00:00.000Z',
+    );
+    expect(app.store.getAsset(stableKey)?.contentHash).toBe(
+      digest('new-asset'),
+    );
   });
 
   it.each([
