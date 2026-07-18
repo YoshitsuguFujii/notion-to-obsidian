@@ -16,6 +16,11 @@ import {
 } from './management-marker.js';
 import { claimTargetExclusively } from './exclusive-target-claim.js';
 import { assertNoSymlinkEscape } from './safe-path.js';
+import {
+  inspectUnsupportedSidecarTarget,
+  type StoredPageIdentity,
+  type UnsupportedSidecarTargetInspection,
+} from './unsupported-sidecar-target.js';
 
 interface BaseAtomicWriteOptions {
   dryRun?: boolean;
@@ -28,14 +33,22 @@ interface BaseAtomicWriteOptions {
   readFile?: (path: string) => Promise<string>;
 }
 
+type ManagedTargetOwnership =
+  | {
+      kind: 'markdown-marker';
+      stored: StoredManagementRecord | undefined;
+    }
+  | {
+      kind: 'unsupported-sidecar';
+      expectedPageId: string;
+      expectedSidecarId: string;
+      storedPage: StoredPageIdentity | undefined;
+    };
+
 type AtomicWriteOptions = BaseAtomicWriteOptions &
   (
-    | {
-        refuseUnmanagedTarget: true;
-        managedRoot: string;
-        stored: StoredManagementRecord | undefined;
-      }
-    | { refuseUnmanagedTarget?: false }
+    | { ownership: ManagedTargetOwnership; managedRoot: string }
+    | { ownership?: undefined }
   );
 
 async function hasSameContent(
@@ -82,7 +95,13 @@ export async function writeMarkdownAtomic(
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code === 'ENOENT')
               return false;
-            throw error;
+            const message =
+              error instanceof Error ? error.message : 'unknown error';
+            throw new InfraError(
+              'storage',
+              `Path inspection failed: ${message}`,
+              { cause: error },
+            );
           }
         },
       },
@@ -99,36 +118,67 @@ export async function writeMarkdownAtomic(
   const read = options.readFile ?? ((candidate) => readFile(candidate, 'utf8'));
   try {
     let claimExclusively = false;
-    if (options.refuseUnmanagedTarget) {
-      try {
-        const target = await lstat(path);
-        if (!target.isFile()) {
-          throw new DomainError(
-            'safety',
-            'Markdown target is not a regular file; inspect or remove the conflicting path before syncing',
-          );
-        }
-        const currentContent = await read(path);
-        if (
-          !inspectManagementMarker({
+    if (options.ownership) {
+      const targetLabel =
+        options.ownership.kind === 'markdown-marker'
+          ? 'Markdown target'
+          : 'Unsupported sidecar target';
+      let inspection: UnsupportedSidecarTargetInspection;
+      if (options.ownership.kind === 'unsupported-sidecar') {
+        inspection = await inspectUnsupportedSidecarTarget(
+          {
             managedRoot: options.managedRoot,
-            filePath: path,
-            content: currentContent,
-            stored: options.stored,
-          }).managed
-        ) {
-          throw new DomainError(
-            'safety',
-            'Markdown target is not managed by notion-to-obsidian; inspect or remove the conflicting path before syncing',
-          );
+            targetPath: path,
+            expectedPageId: options.ownership.expectedPageId,
+            expectedSidecarId: options.ownership.expectedSidecarId,
+            storedPage: options.ownership.storedPage,
+          },
+          { readFile: read },
+        );
+      } else {
+        try {
+          const target = await lstat(path);
+          if (!target.isFile()) {
+            inspection = { kind: 'not-regular' };
+          } else {
+            const currentContent = await read(path);
+            inspection = inspectManagementMarker({
+              managedRoot: options.managedRoot,
+              filePath: path,
+              content: currentContent,
+              stored: options.ownership.stored,
+            }).managed
+              ? { kind: 'owned', content: currentContent }
+              : { kind: 'unmanaged' };
+          }
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+            inspection = { kind: 'absent' };
+          } else {
+            throw cause;
+          }
         }
-        if (currentContent === content) return 'unchanged';
-      } catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
-          claimExclusively = true;
-        } else {
-          throw cause;
-        }
+      }
+
+      if (inspection.kind === 'absent') {
+        claimExclusively = true;
+      } else if (inspection.kind === 'not-regular') {
+        throw new DomainError(
+          'safety',
+          `${targetLabel} is not a regular file; inspect or remove the conflicting path before syncing`,
+        );
+      } else if (inspection.kind === 'unmanaged') {
+        throw new DomainError(
+          'safety',
+          `${targetLabel} is not managed by notion-to-obsidian; inspect or remove the conflicting path before syncing`,
+        );
+      } else if (inspection.kind === 'unreadable') {
+        throw new InfraError(
+          'storage',
+          `${targetLabel} cannot be read; inspect its permissions before syncing`,
+        );
+      } else if (inspection.content === content) {
+        return 'unchanged';
       }
     } else if (await hasSameContent(path, content, read)) {
       return 'unchanged';
@@ -146,8 +196,11 @@ export async function writeMarkdownAtomic(
       await claimTargetExclusively({
         sourcePath: temporaryPath,
         targetPath: path,
-        targetExistsMessage:
-          'Markdown target already exists; inspect or remove the conflicting path before syncing',
+        targetExistsMessage: `${
+          options.ownership?.kind === 'unsupported-sidecar'
+            ? 'Unsupported sidecar target'
+            : 'Markdown target'
+        } already exists; inspect or remove the conflicting path before syncing`,
         ...(options.link ? { link: options.link } : {}),
         ...(options.copyFile ? { copyFile: options.copyFile } : {}),
       });
@@ -162,7 +215,8 @@ export async function writeMarkdownAtomic(
     } catch {
       // Preserve the primary write error when best-effort cleanup also fails.
     }
-    if (cause instanceof DomainError) throw cause;
+    if (cause instanceof DomainError || cause instanceof InfraError)
+      throw cause;
     const message = cause instanceof Error ? cause.message : 'unknown error';
     throw new InfraError('storage', `Atomic write failed: ${message}`, {
       cause,

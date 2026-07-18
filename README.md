@@ -28,6 +28,7 @@ node --env-file=.env dist/cli/index.js sync --config config.yaml
 - **Notionが唯一の正本**です。同期方向はNotionからObsidianのみで、Notion APIへの書き込みは行いません。
 - Obsidian側は読み取り専用ミラーとして扱ってください。管理対象Markdownを手作業で編集してもNotionへは反映されず、後続同期で上書き・移動される可能性があります。
 - 本ツールは`obsidian.managed_path`配下の、管理マーカーとstate DBが一致するファイルだけを変更します。
+- `obsidian.managed_path`配下の`_unsupported/`は、変換できないブロックを保全するサイドカーJSONのために本ツールが予約する領域です。この配下のファイルは、パス規約・state DBの記録・既存JSONの形式がすべて本ツールの生成物と一致する場合だけ更新対象とし、条件を満たさないファイル（手作業で置いたJSONなど）は変更せず同期を停止します。`_unsupported/`に手作業でファイルを置かないでください。
 
 ## 必要要件
 
@@ -214,9 +215,9 @@ syncは`<state.database_path>.lock`で同時実行を防ぎます。通常終了
 
 state DBに未完了runがある場合、次回syncはApply前にcrash recoveryを実行します。管理マーカーとDBを照合し、書込み・MOVE・TRASHの片側反映、重複、管理下の一時ファイルを復旧・整理します。管理対象外ファイルは変更しません。`--dry-run`では検出だけで修復しません。
 
-MarkdownのCREATE中に強制終了すると、管理マーカーがあるもののstate DBに記録がない正規Markdown、state DBに記録がない一時ファイル、state DBに記録がある一時ファイルが残ることがあります。いずれも自動回復しません。最初の正規Markdownは次回syncで管理対象外と判定され、同期が停止します。state DBに記録がない一時ファイルはcrash recoveryの対象外です。正常終了後に残ったstate DBに記録がある一時ファイルも、未完了runがないため通常の次回syncでは自動回収されません。
+MarkdownのCREATE中に強制終了すると、管理マーカーがあるもののstate DBに記録がない正規Markdown、state DBに記録がない一時ファイル、state DBに記録がある一時ファイルが残ることがあります。いずれも自動回復しません。最初の正規Markdownは次回syncで管理対象外と判定され、同期が停止します。state DBに記録がない一時ファイルはcrash recoveryの対象外です。正常終了後に残ったstate DBに記録がある一時ファイルも、未完了runがないため通常の次回syncでは自動回収されません。また、state DBの喪失・古いバックアップからの復元・Markdownだけをmanaged directoryの外へ退避した手動復旧の後には、`_unsupported/`配下にstate DBの記録がないサイドカーだけが残ることがあります。これも自動回復せず、次回syncで管理対象外と判定して同期が停止します。
 
-復旧時はlaunchdなどの自動実行を止め、Vaultとstate DBをバックアップしてから`verify`を実行します。state DBに記録がない正規Markdownと一時ファイルは削除せずmanaged directoryの外へ退避し、`plan`、`sync --dry-run`、通常の`sync`の順で再作成内容を確認して、正規Markdownとstate DBを再確立します。state DBに記録がある一時ファイルは、正規Markdownの管理マーカーとstate DBの`local_path`が一致することを確認してから、一時ファイルだけをmanaged directoryの外へ退避してください。管理マーカー・内容・Notion page IDの一致だけを根拠にstate DBを手編集したり、既存ファイルを管理対象として取り込んだりしないでください。
+復旧時はlaunchdなどの自動実行を止め、Vaultとstate DBをバックアップしてから`verify`を実行します。state DBに記録がない正規Markdownと一時ファイルは削除せずmanaged directoryの外へ退避し、`plan`、`sync --dry-run`、通常の`sync`の順で再作成内容を確認して、正規Markdownとstate DBを再確立します。state DBに記録がある一時ファイルは、正規Markdownの管理マーカーとstate DBの`local_path`が一致することを確認してから、一時ファイルだけをmanaged directoryの外へ退避してください。state DBの記録がない`_unsupported/`配下のサイドカーも、削除せずmanaged directoryの外へ退避してから再同期してください。管理マーカー・内容・Notion page IDの一致だけを根拠にstate DBを手編集したり、既存ファイルを管理対象として取り込んだりしないでください。
 
 ### 画像・アセットが更新されない
 

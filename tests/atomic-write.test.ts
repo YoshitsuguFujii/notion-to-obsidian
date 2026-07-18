@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { DomainError } from '../src/errors.js';
 import { writeMarkdownAtomic } from '../src/filesystem/atomic-write.js';
 
 const directories: string[] = [];
@@ -22,9 +23,17 @@ async function temporaryPath(): Promise<{ directory: string; path: string }> {
 }
 
 const notionId = '11111111-1111-4111-8111-111111111111';
+const sidecarId = '22222222-2222-4222-8222-222222222222';
 
 function managedMarkdown(body: string): string {
   return `---\nmanaged_by: notion-to-obsidian\nnotion_id: ${notionId}\n---\n${body}`;
+}
+
+function unsupportedSidecar(
+  payload: unknown = { value: 1 },
+  type = 'future_block',
+): string {
+  return `${JSON.stringify({ type, id: sidecarId, payload }, null, 2)}\n`;
 }
 
 function fileSystemError(code: string, message: string): NodeJS.ErrnoException {
@@ -96,9 +105,8 @@ describe('writeMarkdownAtomic', () => {
 
     await expect(
       writeMarkdownAtomic(path, content, {
-        refuseUnmanagedTarget: true,
         managedRoot: directory,
-        stored: undefined,
+        ownership: { kind: 'markdown-marker', stored: undefined },
       }),
     ).resolves.toBe('written');
 
@@ -111,9 +119,8 @@ describe('writeMarkdownAtomic', () => {
 
     await expect(
       writeMarkdownAtomic(path, managedMarkdown('Body'), {
-        refuseUnmanagedTarget: true,
         managedRoot: directory,
-        stored: undefined,
+        ownership: { kind: 'markdown-marker', stored: undefined },
         temporaryId: () => 'race',
         link: async (_source, target) => {
           await writeFile(target, unmanaged);
@@ -134,9 +141,8 @@ describe('writeMarkdownAtomic', () => {
 
     await expect(
       writeMarkdownAtomic(path, content, {
-        refuseUnmanagedTarget: true,
         managedRoot: directory,
-        stored: undefined,
+        ownership: { kind: 'markdown-marker', stored: undefined },
       }),
     ).rejects.toMatchObject({ category: 'safety' });
 
@@ -150,9 +156,8 @@ describe('writeMarkdownAtomic', () => {
 
     await expect(
       writeMarkdownAtomic(path, managedMarkdown('Body'), {
-        refuseUnmanagedTarget: true,
         managedRoot: directory,
-        stored: undefined,
+        ownership: { kind: 'markdown-marker', stored: undefined },
       }),
     ).rejects.toMatchObject({ category: 'safety' });
 
@@ -167,9 +172,11 @@ describe('writeMarkdownAtomic', () => {
 
     await expect(
       writeMarkdownAtomic(path, managedMarkdown('New body'), {
-        refuseUnmanagedTarget: true,
         managedRoot: directory,
-        stored: { notionId, localPath: 'nested/Page.md' },
+        ownership: {
+          kind: 'markdown-marker',
+          stored: { notionId, localPath: 'nested/Page.md' },
+        },
         readFile: () =>
           Promise.reject(fileSystemError('EACCES', 'permission denied')),
       }),
@@ -184,9 +191,8 @@ describe('writeMarkdownAtomic', () => {
 
     await expect(
       writeMarkdownAtomic(path, content, {
-        refuseUnmanagedTarget: true,
         managedRoot: directory,
-        stored: undefined,
+        ownership: { kind: 'markdown-marker', stored: undefined },
         temporaryId: () => 'kept',
         unlink: () =>
           Promise.reject(fileSystemError('EACCES', 'cannot remove temp')),
@@ -205,9 +211,8 @@ describe('writeMarkdownAtomic', () => {
 
     await expect(
       writeMarkdownAtomic(path, managedMarkdown('Body'), {
-        refuseUnmanagedTarget: true,
         managedRoot: directory,
-        stored: undefined,
+        ownership: { kind: 'markdown-marker', stored: undefined },
         temporaryId: () => 'retried',
         unlink: async (temporaryPath) => {
           if (unavailable) {
@@ -229,9 +234,11 @@ describe('writeMarkdownAtomic', () => {
     await writeFile(path, existing);
     const before = (await stat(path)).mtimeMs;
     const options = {
-      refuseUnmanagedTarget: true as const,
       managedRoot: directory,
-      stored: { notionId, localPath: 'nested/Page.md' },
+      ownership: {
+        kind: 'markdown-marker' as const,
+        stored: { notionId, localPath: 'nested/Page.md' },
+      },
     };
 
     await expect(writeMarkdownAtomic(path, existing, options)).resolves.toBe(
@@ -254,9 +261,11 @@ describe('writeMarkdownAtomic', () => {
 
     await expect(
       writeMarkdownAtomic(path, managedMarkdown('Synced body'), {
-        refuseUnmanagedTarget: true,
         managedRoot: directory,
-        stored: { notionId, localPath: 'another/Page.md' },
+        ownership: {
+          kind: 'markdown-marker',
+          stored: { notionId, localPath: 'another/Page.md' },
+        },
       }),
     ).rejects.toMatchObject({ category: 'safety' });
 
@@ -268,9 +277,8 @@ describe('writeMarkdownAtomic', () => {
 
     await expect(
       writeMarkdownAtomic(path, managedMarkdown('Body'), {
-        refuseUnmanagedTarget: true,
         managedRoot: directory,
-        stored: undefined,
+        ownership: { kind: 'markdown-marker', stored: undefined },
         temporaryId: () => 'failed',
         link: () => Promise.reject(fileSystemError('EIO', 'link failed')),
       }),
@@ -287,5 +295,158 @@ describe('writeMarkdownAtomic', () => {
       'written',
     );
     expect(await readFile(path, 'utf8')).toBe('New body');
+  });
+
+  it('対象が不在ならページ記録なしでもunsupported sidecarを排他的に作成する', async () => {
+    const { directory } = await temporaryPath();
+    const path = join(directory, '_unsupported', notionId, `${sidecarId}.json`);
+    const content = unsupportedSidecar();
+
+    await expect(
+      writeMarkdownAtomic(path, content, {
+        managedRoot: directory,
+        ownership: {
+          kind: 'unsupported-sidecar',
+          expectedPageId: notionId,
+          expectedSidecarId: sidecarId,
+          storedPage: undefined,
+        },
+      }),
+    ).resolves.toBe('written');
+
+    expect(await readFile(path, 'utf8')).toBe(content);
+  });
+
+  it('unsupported sidecarの確認後に対象が現れた場合は内容を保持して停止する', async () => {
+    const { directory } = await temporaryPath();
+    const path = join(directory, '_unsupported', notionId, `${sidecarId}.json`);
+    const unmanaged = '{"personal":true}\n';
+
+    await expect(
+      writeMarkdownAtomic(path, unsupportedSidecar(), {
+        managedRoot: directory,
+        ownership: {
+          kind: 'unsupported-sidecar',
+          expectedPageId: notionId,
+          expectedSidecarId: sidecarId,
+          storedPage: undefined,
+        },
+        temporaryId: () => 'race',
+        link: async (_source, target) => {
+          await writeFile(target, unmanaged);
+          throw fileSystemError('EEXIST', 'target appeared');
+        },
+      }),
+    ).rejects.toMatchObject({ category: 'safety' });
+
+    expect(await readFile(path, 'utf8')).toBe(unmanaged);
+  });
+
+  it('所有契約を満たさないunsupported sidecarは内容を保持して停止する', async () => {
+    const { directory } = await temporaryPath();
+    const path = join(directory, '_unsupported', notionId, `${sidecarId}.json`);
+    const unmanaged = `${JSON.stringify({ type: 'future_block', id: 'other', payload: {} })}\n`;
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, unmanaged);
+
+    try {
+      await writeMarkdownAtomic(path, unsupportedSidecar(), {
+        managedRoot: directory,
+        ownership: {
+          kind: 'unsupported-sidecar',
+          expectedPageId: notionId,
+          expectedSidecarId: sidecarId,
+          storedPage: { notionId },
+        },
+      });
+      throw new Error('expected ownership rejection');
+    } catch (error) {
+      expect(error).toBeInstanceOf(DomainError);
+      if (!(error instanceof DomainError)) throw error;
+      expect(error.category).toBe('safety');
+      expect(error.message).toContain('Unsupported sidecar target');
+    }
+
+    expect(await readFile(path, 'utf8')).toBe(unmanaged);
+  });
+
+  it('管理対象unsupported sidecarは同内容ならmtimeを維持しpayloadまたはtypeの差分を置換する', async () => {
+    const { directory } = await temporaryPath();
+    const path = join(directory, '_unsupported', notionId, `${sidecarId}.json`);
+    const existing = unsupportedSidecar();
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, existing);
+    const before = (await stat(path)).mtimeMs;
+    const options = {
+      managedRoot: directory,
+      ownership: {
+        kind: 'unsupported-sidecar' as const,
+        expectedPageId: notionId,
+        expectedSidecarId: sidecarId,
+        storedPage: { notionId },
+      },
+    };
+
+    await expect(writeMarkdownAtomic(path, existing, options)).resolves.toBe(
+      'unchanged',
+    );
+    expect((await stat(path)).mtimeMs).toBe(before);
+
+    const changedPayload = unsupportedSidecar({ value: 2 });
+    await expect(
+      writeMarkdownAtomic(path, changedPayload, options),
+    ).resolves.toBe('written');
+    expect(await readFile(path, 'utf8')).toBe(changedPayload);
+
+    const changedType = unsupportedSidecar({ value: 2 }, 'another_block');
+    await expect(writeMarkdownAtomic(path, changedType, options)).resolves.toBe(
+      'written',
+    );
+    expect(await readFile(path, 'utf8')).toBe(changedType);
+  });
+
+  it('unsupported sidecarがdirectoryの場合は内容を保持してsafety errorを返す', async () => {
+    const { directory } = await temporaryPath();
+    const path = join(directory, '_unsupported', notionId, `${sidecarId}.json`);
+    await mkdir(path, { recursive: true });
+    await writeFile(join(path, 'kept.txt'), 'Keep');
+
+    await expect(
+      writeMarkdownAtomic(path, unsupportedSidecar(), {
+        managedRoot: directory,
+        ownership: {
+          kind: 'unsupported-sidecar',
+          expectedPageId: notionId,
+          expectedSidecarId: sidecarId,
+          storedPage: { notionId },
+        },
+      }),
+    ).rejects.toMatchObject({ category: 'safety' });
+
+    expect(await readFile(join(path, 'kept.txt'), 'utf8')).toBe('Keep');
+  });
+
+  it('unsupported sidecarを読めない場合は内容を保持してstorage errorを返す', async () => {
+    const { directory } = await temporaryPath();
+    const path = join(directory, '_unsupported', notionId, `${sidecarId}.json`);
+    const existing = unsupportedSidecar();
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, existing);
+
+    await expect(
+      writeMarkdownAtomic(path, unsupportedSidecar({ value: 2 }), {
+        managedRoot: directory,
+        ownership: {
+          kind: 'unsupported-sidecar',
+          expectedPageId: notionId,
+          expectedSidecarId: sidecarId,
+          storedPage: { notionId },
+        },
+        readFile: () =>
+          Promise.reject(fileSystemError('EACCES', 'permission denied')),
+      }),
+    ).rejects.toMatchObject({ category: 'storage' });
+
+    expect(await readFile(path, 'utf8')).toBe(existing);
   });
 });

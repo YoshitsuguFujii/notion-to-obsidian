@@ -1,4 +1,12 @@
-import { access, mkdtemp, stat } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -413,5 +421,298 @@ describe('runSyncOrchestrator', () => {
       expect.objectContaining({ type: 'UNCHANGED', notionId: rootId }),
     );
     expect(downloadAsset).toHaveBeenCalledTimes(1);
+  });
+
+  it('同じunsupported sidecarが重複しても1ファイルへ集約しresourceを保存する', async () => {
+    const { store, config, census, lock } = await fixture();
+    const sidecar = { type: 'future_block', id: 'block-1', payload: { a: 1 } };
+
+    await runSyncOrchestrator(
+      config,
+      {},
+      {
+        store,
+        lock,
+        census: () => Promise.resolve(census),
+        retrieveContent: () =>
+          Promise.resolve({
+            markdown: '# Body\n',
+            warnings: [],
+            sidecars: [sidecar, { ...sidecar }],
+          }),
+        now: () => '2026-07-12T01:00:00.000Z',
+        runId: () => 'run-identical-sidecars',
+      },
+    );
+
+    const path = join(
+      config.obsidian.managedPath,
+      '_unsupported',
+      rootId,
+      'block-1.json',
+    );
+    await expect(readFile(path, 'utf8')).resolves.toContain('"id": "block-1"');
+    expect(store.getResource(rootId)).toMatchObject({ status: 'active' });
+  });
+
+  it('同じIDのunsupported sidecarに異なる内容がある場合はファイルとresourceを作成しない', async () => {
+    const { store, config, census, lock } = await fixture();
+
+    await expect(
+      runSyncOrchestrator(
+        config,
+        {},
+        {
+          store,
+          lock,
+          census: () => Promise.resolve(census),
+          retrieveContent: () =>
+            Promise.resolve({
+              markdown: '# Body\n',
+              warnings: [],
+              sidecars: [
+                { type: 'unavailable', id: 'block-1', payload: null },
+                { type: 'future_block', id: 'block-1', payload: { a: 1 } },
+              ],
+            }),
+          now: () => '2026-07-12T01:00:00.000Z',
+          runId: () => 'run-conflicting-sidecars',
+        },
+      ),
+    ).rejects.toMatchObject({ category: 'safety' });
+
+    await expect(access(config.obsidian.managedPath)).rejects.toThrow();
+    expect(store.getResource(rootId)).toBeUndefined();
+  });
+
+  it.each([
+    ['sanitize結果', 'a/b', 'a:b'],
+    ['大文字小文字', 'Block-A', 'block-a'],
+    ['Unicode合成形式', 'Cafe\u0301', 'Café'],
+  ])(
+    '%sだけが異なるunsupported sidecarの衝突をPlanで拒否する',
+    async (_label, first, second) => {
+      const { store, config, census, lock } = await fixture();
+
+      await expect(
+        runSyncOrchestrator(
+          config,
+          { dryRun: true },
+          {
+            store,
+            lock,
+            census: () => Promise.resolve(census),
+            retrieveContent: () =>
+              Promise.resolve({
+                markdown: '# Body\n',
+                warnings: [],
+                sidecars: [
+                  { type: 'future_block', id: first, payload: {} },
+                  { type: 'future_block', id: second, payload: {} },
+                ],
+              }),
+            now: () => '2026-07-12T01:00:00.000Z',
+            runId: () => `dry-run-collision-${first}`,
+          },
+        ),
+      ).rejects.toMatchObject({ category: 'safety' });
+
+      await expect(access(config.obsidian.managedPath)).rejects.toThrow();
+      expect(store.getLatestRun()).toBeUndefined();
+    },
+  );
+
+  it('DB記録がないunsupported sidecarを自動採用せず保持して停止する', async () => {
+    const { store, config, census, lock } = await fixture();
+    const sidecar = { type: 'future_block', id: 'block-1', payload: { a: 1 } };
+    const path = join(
+      config.obsidian.managedPath,
+      '_unsupported',
+      rootId,
+      'block-1.json',
+    );
+    const content = `${JSON.stringify(sidecar, null, 2)}\n`;
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, content);
+
+    await expect(
+      runSyncOrchestrator(
+        config,
+        {},
+        {
+          store,
+          lock,
+          census: () => Promise.resolve(census),
+          retrieveContent: () =>
+            Promise.resolve({
+              markdown: '# Body\n',
+              warnings: [],
+              sidecars: [sidecar],
+            }),
+          now: () => '2026-07-12T01:00:00.000Z',
+          runId: () => 'run-orphan-sidecar',
+        },
+      ),
+    ).rejects.toMatchObject({ category: 'safety' });
+
+    expect(await readFile(path, 'utf8')).toBe(content);
+    expect(store.getResource(rootId)).toBeUndefined();
+  });
+
+  it('所有契約を満たさないunsupported sidecarをdry-runで保持して停止する', async () => {
+    const { store, config, census, lock } = await fixture();
+    let run = 0;
+    const dependencies = {
+      store,
+      lock,
+      census: () => Promise.resolve(census),
+      retrieveContent: () =>
+        Promise.resolve({ markdown: '# Body\n', warnings: [], sidecars: [] }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-unmanaged-sidecar-${++run}`,
+    };
+    await runSyncOrchestrator(config, {}, dependencies);
+    const sidecar = { type: 'future_block', id: 'block-1', payload: {} };
+    const path = join(
+      config.obsidian.managedPath,
+      '_unsupported',
+      rootId,
+      'block-1.json',
+    );
+    const personal = '{"personal":true}\n';
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, personal);
+
+    await expect(
+      runSyncOrchestrator(
+        config,
+        { dryRun: true },
+        {
+          ...dependencies,
+          retrieveContent: () =>
+            Promise.resolve({
+              markdown: '# Body\n',
+              warnings: [],
+              sidecars: [sidecar],
+            }),
+        },
+      ),
+    ).rejects.toMatchObject({ category: 'safety' });
+
+    expect(await readFile(path, 'utf8')).toBe(personal);
+    expect(store.getLatestRun()?.runId).toBe('run-unmanaged-sidecar-1');
+  });
+
+  it('unsupported sidecarの出力先がdirectoryならdry-runで内容を保持して停止する', async () => {
+    const { store, config, census, lock } = await fixture();
+    const path = join(
+      config.obsidian.managedPath,
+      '_unsupported',
+      rootId,
+      'block-1.json',
+    );
+    await mkdir(path, { recursive: true });
+    await writeFile(join(path, 'kept.txt'), 'Keep');
+
+    await expect(
+      runSyncOrchestrator(
+        config,
+        { dryRun: true },
+        {
+          store,
+          lock,
+          census: () => Promise.resolve(census),
+          retrieveContent: () =>
+            Promise.resolve({
+              markdown: '# Body\n',
+              warnings: [],
+              sidecars: [{ type: 'future_block', id: 'block-1', payload: {} }],
+            }),
+          now: () => '2026-07-12T01:00:00.000Z',
+          runId: () => 'dry-run-directory-sidecar',
+        },
+      ),
+    ).rejects.toMatchObject({ category: 'safety' });
+
+    expect(await readFile(join(path, 'kept.txt'), 'utf8')).toBe('Keep');
+    expect(store.getLatestRun()).toBeUndefined();
+  });
+
+  it('unsupported sidecarを読めない場合はdry-runでstorage errorを返して副作用を出さない', async () => {
+    const { store, config, census, lock } = await fixture();
+    const sidecar = { type: 'future_block', id: 'block-1', payload: {} };
+    const path = join(
+      config.obsidian.managedPath,
+      '_unsupported',
+      rootId,
+      'block-1.json',
+    );
+    const content = `${JSON.stringify(sidecar, null, 2)}\n`;
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, content, { mode: 0o000 });
+
+    try {
+      await expect(
+        runSyncOrchestrator(
+          config,
+          { dryRun: true },
+          {
+            store,
+            lock,
+            census: () => Promise.resolve(census),
+            retrieveContent: () =>
+              Promise.resolve({
+                markdown: '# Body\n',
+                warnings: [],
+                sidecars: [sidecar],
+              }),
+            now: () => '2026-07-12T01:00:00.000Z',
+            runId: () => 'dry-run-unreadable-sidecar',
+          },
+        ),
+      ).rejects.toMatchObject({ category: 'storage' });
+      expect(store.getLatestRun()).toBeUndefined();
+    } finally {
+      await chmod(path, 0o600);
+    }
+    expect(await readFile(path, 'utf8')).toBe(content);
+  });
+
+  it('ページ移動時も同じunsupported sidecarを管理対象として維持する', async () => {
+    const { store, config, census, lock } = await fixture();
+    const sidecar = { type: 'future_block', id: 'block-1', payload: {} };
+    let run = 0;
+    const dependencies = {
+      store,
+      lock,
+      census: () => Promise.resolve(census),
+      retrieveContent: () =>
+        Promise.resolve({
+          markdown: '# Body\n',
+          warnings: [],
+          sidecars: [sidecar],
+        }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-move-sidecar-${++run}`,
+    };
+    await runSyncOrchestrator(config, {}, dependencies);
+    const sidecarPath = join(
+      config.obsidian.managedPath,
+      '_unsupported',
+      rootId,
+      'block-1.json',
+    );
+    const before = (await stat(sidecarPath)).mtimeMs;
+    config.notion.roots = [{ pageId: rootId, localName: 'Renamed title' }];
+
+    const result = await runSyncOrchestrator(config, {}, dependencies);
+
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'MOVE', notionId: rootId }),
+    );
+    expect((await stat(sidecarPath)).mtimeMs).toBe(before);
+    await expect(
+      access(join(config.obsidian.managedPath, 'Renamed title.md')),
+    ).resolves.toBeUndefined();
   });
 });

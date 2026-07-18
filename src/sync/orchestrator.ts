@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { access, readFile } from 'node:fs/promises';
+import { access, lstat, readFile } from 'node:fs/promises';
 import type { AppConfig } from '../config/index.js';
 import { processPageAssets } from '../assets/processor.js';
 import type { DownloadResult } from '../assets/http-downloader.js';
@@ -7,7 +7,7 @@ import {
   planResourcePaths,
   type PlannedResourcePath,
 } from '../domain/path-plan.js';
-import { DomainError } from '../errors.js';
+import { DomainError, InfraError } from '../errors.js';
 import { writeMarkdownAtomic } from '../filesystem/atomic-write.js';
 import {
   inspectManagementMarker,
@@ -15,9 +15,10 @@ import {
 } from '../filesystem/management-marker.js';
 import { moveManagedFile } from '../filesystem/mover.js';
 import {
+  assertNoSymlinkEscape,
   joinManagedPath,
-  sanitizePathSegment,
 } from '../filesystem/safe-path.js';
+import { inspectUnsupportedSidecarTarget } from '../filesystem/unsupported-sidecar-target.js';
 import { trashManagedFile } from '../filesystem/trash.js';
 import type { RootCensus, CensusResource } from '../notion/census.js';
 import type { BlockNode } from '../notion/blocks.js';
@@ -46,6 +47,10 @@ import { planMissingResources } from './deletion-guard.js';
 import { allocateOutputPaths } from './output-path-allocator.js';
 import { validateSyncPlan, type SyncPlanAction } from './plan-validator.js';
 import { reconcileResource, type ResourceFingerprint } from './reconciler.js';
+import {
+  planUnsupportedSidecars,
+  type PlannedUnsupportedSidecar,
+} from './unsupported-sidecar-plan.js';
 
 const API_VERSION = '2026-03-11';
 const TOOL_VERSION = '0.1.0';
@@ -123,7 +128,7 @@ interface PlannedContent {
   dataSourceIndex: boolean;
   assets: AssetState[];
   assetWarnings: WarningState[];
-  sidecars: UnsupportedSidecar[];
+  plannedSidecars: PlannedUnsupportedSidecar[];
   blocks?: BlockNode[];
 }
 
@@ -152,6 +157,18 @@ async function exists(path: string): Promise<boolean> {
   try {
     await access(path);
     return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    const message = error instanceof Error ? error.message : 'unknown error';
+    throw new InfraError('storage', `Path inspection failed: ${message}`, {
+      cause: error,
+    });
+  }
+}
+
+async function isSymbolicLink(path: string): Promise<boolean> {
+  try {
+    return (await lstat(path)).isSymbolicLink();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
@@ -532,6 +549,11 @@ export async function runSyncOrchestrator(
           ),
         ];
         warningCount += warnings.length;
+        const plannedSidecars = planUnsupportedSidecars({
+          managedRoot: config.obsidian.managedPath,
+          pageId: resource.notionId,
+          sidecars: retrieved.sidecars,
+        });
         planned.push({
           resource,
           path,
@@ -547,7 +569,7 @@ export async function runSyncOrchestrator(
           dataSourceIndex: Boolean(indexedRows),
           assets: plannedAssets,
           assetWarnings,
-          sidecars: retrieved.sidecars,
+          plannedSidecars,
           ...(blocks ? { blocks } : {}),
         });
         actions.push({
@@ -667,6 +689,43 @@ export async function runSyncOrchestrator(
           ),
           targetPath,
           managed: true,
+        });
+      }
+      for (const sidecar of item.plannedSidecars) {
+        await assertNoSymlinkEscape(
+          { isSymbolicLink },
+          config.obsidian.managedPath,
+          sidecar.targetPath,
+        );
+        const inspection = await inspectUnsupportedSidecarTarget({
+          managedRoot: config.obsidian.managedPath,
+          targetPath: sidecar.targetPath,
+          expectedPageId: sidecar.pageId,
+          expectedSidecarId: sidecar.sidecarId,
+          storedPage: item.stored,
+        });
+        if (inspection.kind === 'not-regular') {
+          throw new DomainError(
+            'safety',
+            'Unsupported sidecar target is not a regular file; inspect or remove the conflicting path before syncing',
+          );
+        }
+        if (inspection.kind === 'unreadable') {
+          throw new InfraError(
+            'storage',
+            'Unsupported sidecar target cannot be read; inspect its permissions before syncing',
+          );
+        }
+        validationActions.push({
+          type: 'WRITE',
+          notionId: sidecar.actionId,
+          targetPath: sidecar.targetPath,
+          targetState:
+            inspection.kind === 'owned'
+              ? 'managed'
+              : inspection.kind === 'unmanaged'
+                ? 'unmanaged'
+                : 'absent',
         });
       }
     }
@@ -791,25 +850,25 @@ export async function runSyncOrchestrator(
             `${frontmatter}${item.body}`,
             type === 'CREATE' || type === 'UPDATE'
               ? {
-                  refuseUnmanagedTarget: true,
                   managedRoot: config.obsidian.managedPath,
-                  stored: item.stored,
+                  ownership: {
+                    kind: 'markdown-marker',
+                    stored: item.stored,
+                  } as const,
                 }
               : { managedRoot: config.obsidian.managedPath },
           );
         }
-        for (const sidecar of item.sidecars) {
-          const sidecarPath = joinManagedPath(
-            config.obsidian.managedPath,
-            '_unsupported',
-            sanitizePathSegment(item.resource.notionId, item.resource.notionId),
-            `${sanitizePathSegment(sidecar.id, sidecar.id)}.json`,
-          );
-          await writeMarkdownAtomic(
-            sidecarPath,
-            `${JSON.stringify(sidecar, null, 2)}\n`,
-            { managedRoot: config.obsidian.managedPath },
-          );
+        for (const sidecar of item.plannedSidecars) {
+          await writeMarkdownAtomic(sidecar.targetPath, sidecar.content, {
+            managedRoot: config.obsidian.managedPath,
+            ownership: {
+              kind: 'unsupported-sidecar',
+              expectedPageId: sidecar.pageId,
+              expectedSidecarId: sidecar.sidecarId,
+              storedPage: item.stored,
+            },
+          });
         }
         if (type !== 'UNCHANGED') {
           dependencies.store.transaction(() =>
