@@ -791,9 +791,11 @@ export async function runSyncOrchestrator(
             `${frontmatter}${item.body}`,
             type === 'CREATE' || type === 'UPDATE'
               ? {
-                  refuseUnmanagedTarget: true,
                   managedRoot: config.obsidian.managedPath,
-                  stored: item.stored,
+                  ownership: {
+                    kind: 'markdown-marker',
+                    stored: item.stored,
+                  } as const,
                 }
               : { managedRoot: config.obsidian.managedPath },
           );
