@@ -1,10 +1,4 @@
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -17,9 +11,7 @@ const pageId = '11111111-1111-4111-8111-111111111111';
 const sidecarId = '22222222-2222-4222-8222-222222222222';
 const directories: string[] = [];
 
-function sidecarContent(
-  override: Record<string, unknown> = {},
-): string {
+function sidecarContent(override: Record<string, unknown> = {}): string {
   return `${JSON.stringify(
     { type: 'future_block', id: sidecarId, payload: { value: 1 }, ...override },
     null,
@@ -83,26 +75,43 @@ describe('inspectUnsupportedSidecarTarget', () => {
   );
 
   it.each([
-    ['ページdirectory', (root: string) => join(root, '_unsupported', 'other', `${sidecarId}.json`)],
-    ['filename stem', (root: string) => join(root, '_unsupported', pageId, 'other.json')],
-    ['拡張子', (root: string) => join(root, '_unsupported', pageId, `${sidecarId}.txt`)],
-    ['階層数', (root: string) => join(root, '_unsupported', pageId, 'extra', `${sidecarId}.json`)],
-  ])('%sが正準パスと異なる場合は所有契約を満たさない', async (_label, pathFor) => {
-    const { managedRoot } = await fixture();
-    const targetPath = pathFor(managedRoot);
-    await mkdir(dirname(targetPath), { recursive: true });
-    await writeFile(targetPath, sidecarContent());
+    [
+      'ページdirectory',
+      (root: string) =>
+        join(root, '_unsupported', 'other', `${sidecarId}.json`),
+    ],
+    [
+      'filename stem',
+      (root: string) => join(root, '_unsupported', pageId, 'other.json'),
+    ],
+    [
+      '拡張子',
+      (root: string) => join(root, '_unsupported', pageId, `${sidecarId}.txt`),
+    ],
+    [
+      '階層数',
+      (root: string) =>
+        join(root, '_unsupported', pageId, 'extra', `${sidecarId}.json`),
+    ],
+  ])(
+    '%sが正準パスと異なる場合は所有契約を満たさない',
+    async (_label, pathFor) => {
+      const { managedRoot } = await fixture();
+      const targetPath = pathFor(managedRoot);
+      await mkdir(dirname(targetPath), { recursive: true });
+      await writeFile(targetPath, sidecarContent());
 
-    await expect(
-      inspectUnsupportedSidecarTarget({
-        managedRoot,
-        targetPath,
-        expectedPageId: pageId,
-        expectedSidecarId: sidecarId,
-        storedPage: { notionId: pageId },
-      }),
-    ).resolves.toEqual({ kind: 'unmanaged' });
-  });
+      await expect(
+        inspectUnsupportedSidecarTarget({
+          managedRoot,
+          targetPath,
+          expectedPageId: pageId,
+          expectedSidecarId: sidecarId,
+          storedPage: { notionId: pageId },
+        }),
+      ).resolves.toEqual({ kind: 'unmanaged' });
+    },
+  );
 
   it.each([
     ['ID不一致', sidecarContent({ id: 'other' })],
@@ -178,7 +187,12 @@ describe('inspectUnsupportedSidecarTarget', () => {
           expectedSidecarId: sidecarId,
           storedPage: { notionId: pageId },
         },
-        { readFile: () => Promise.reject(Object.assign(new Error('denied'), { code: 'EACCES' })) },
+        {
+          readFile: () =>
+            Promise.reject(
+              Object.assign(new Error('denied'), { code: 'EACCES' }),
+            ),
+        },
       ),
     ).resolves.toEqual({ kind: 'unreadable' });
     expect(await readFile(targetPath, 'utf8')).toBe(content);
@@ -196,7 +210,12 @@ describe('inspectUnsupportedSidecarTarget', () => {
           expectedSidecarId: sidecarId,
           storedPage: { notionId: pageId },
         },
-        { lstat: () => Promise.reject(Object.assign(new Error('I/O error'), { code: 'EIO' })) },
+        {
+          lstat: () =>
+            Promise.reject(
+              Object.assign(new Error('I/O error'), { code: 'EIO' }),
+            ),
+        },
       ),
     ).rejects.toMatchObject({ category: 'storage' });
   });
