@@ -94,7 +94,13 @@ export async function writeMarkdownAtomic(
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code === 'ENOENT')
               return false;
-            throw error;
+            const message =
+              error instanceof Error ? error.message : 'unknown error';
+            throw new InfraError(
+              'storage',
+              `Path inspection failed: ${message}`,
+              { cause: error },
+            );
           }
         },
       },

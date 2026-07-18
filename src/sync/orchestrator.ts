@@ -159,7 +159,10 @@ async function exists(path: string): Promise<boolean> {
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
+    const message = error instanceof Error ? error.message : 'unknown error';
+    throw new InfraError('storage', `Path inspection failed: ${message}`, {
+      cause: error,
+    });
   }
 }
 
