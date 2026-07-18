@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, open, readFile, readdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -59,6 +60,7 @@ describe('NodeHttpDownloader', () => {
       }),
     ).resolves.toEqual({
       size: 11,
+      contentHash: createHash('sha256').update('hello world').digest('hex'),
       contentType: 'application/octet-stream',
       etag: 'etag-1',
       lastModified: 'Sat, 11 Jul 2026 00:00:00 GMT',
@@ -170,6 +172,86 @@ describe('NodeHttpDownloader', () => {
 
     await vi.advanceTimersByTimeAsync(100);
     await expect(download).rejects.toMatchObject({ category: 'network' });
+    expect(await readdir(directory)).toEqual([]);
+  });
+
+  it('一部だけ書き込まれた場合も残りを保存し内容とhashを一致させる', async () => {
+    const { destination } = await temporaryDestination();
+    const downloader = new NodeHttpDownloader({
+      fetch: () => Promise.resolve(new Response('partial-write')),
+      validateUrl: () => Promise.resolve(),
+      temporaryId: () => 'fixed',
+      openFile: async (path) => {
+        const file = await open(path, 'wx');
+        return {
+          close: () => file.close(),
+          write: async (buffer, offset, length) =>
+            file.write(buffer, offset, Math.max(1, Math.floor(length / 2))),
+        };
+      },
+    });
+
+    const result = await downloader.download({
+      url: new URL('https://assets.example/file'),
+      destination,
+      maximumBytes: 100,
+    });
+
+    expect(await readFile(destination, 'utf8')).toBe('partial-write');
+    expect(result.contentHash).toBe(
+      createHash('sha256').update('partial-write').digest('hex'),
+    );
+  });
+
+  it('書き込みが進まない場合はstorageとして停止しファイルを残さない', async () => {
+    const { directory, destination } = await temporaryDestination();
+    const downloader = new NodeHttpDownloader({
+      fetch: () => Promise.resolve(new Response('content')),
+      validateUrl: () => Promise.resolve(),
+      temporaryId: () => 'fixed',
+      openFile: async (path) => {
+        const file = await open(path, 'wx');
+        return {
+          close: () => file.close(),
+          write: () => Promise.resolve({ bytesWritten: 0 }),
+        };
+      },
+    });
+
+    await expect(
+      downloader.download({
+        url: new URL('https://assets.example/file'),
+        destination,
+        maximumBytes: 100,
+      }),
+    ).rejects.toMatchObject({ category: 'storage' });
+    expect(await readdir(directory)).toEqual([]);
+  });
+
+  it('response streamの読取失敗はnetworkとして扱いファイルを残さない', async () => {
+    const { directory, destination } = await temporaryDestination();
+    const downloader = new NodeHttpDownloader({
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(new Error('stream failed'));
+              },
+            }),
+          ),
+        ),
+      validateUrl: () => Promise.resolve(),
+      temporaryId: () => 'fixed',
+    });
+
+    await expect(
+      downloader.download({
+        url: new URL('https://assets.example/file'),
+        destination,
+        maximumBytes: 100,
+      }),
+    ).rejects.toMatchObject({ category: 'network' });
     expect(await readdir(directory)).toEqual([]);
   });
 });

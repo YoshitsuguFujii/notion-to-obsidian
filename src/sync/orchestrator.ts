@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto';
 import { access, lstat, readFile } from 'node:fs/promises';
 import type { AppConfig } from '../config/index.js';
-import { processPageAssets } from '../assets/processor.js';
+import {
+  applyPlannedPageAssets,
+  assertAssetPathSafe,
+  planPageAssets,
+  type PlannedPageAssets,
+} from '../assets/processor.js';
+import { inspectAssetTargetForPlan } from '../assets/target.js';
 import type { DownloadResult } from '../assets/http-downloader.js';
 import {
   planResourcePaths,
@@ -97,12 +103,21 @@ export interface SyncOptions {
   verbose?: boolean;
 }
 
-export interface OrchestratedAction {
-  type: 'CREATE' | 'UPDATE' | 'MOVE' | 'TRASH' | 'UNCHANGED' | 'WARNING';
-  notionId: string;
-  path?: string;
-  message?: string;
-}
+export type OrchestratedAction =
+  | {
+      type: 'CREATE' | 'UPDATE' | 'MOVE' | 'TRASH' | 'UNCHANGED' | 'WARNING';
+      notionId: string;
+      stableKey?: never;
+      path?: string;
+      message?: string;
+    }
+  | {
+      type: 'ASSET_DEFERRED';
+      stableKey: string;
+      notionId?: never;
+      path: string;
+      message?: never;
+    };
 
 export interface SyncResult {
   runId: string;
@@ -117,7 +132,6 @@ interface PlannedContent {
   resource: CensusResource;
   path: PlannedResourcePath;
   body: string;
-  sourceBody: string;
   contentHash: string;
   structureHash: string;
   warnings: Array<{ type: string; message: string }>;
@@ -129,7 +143,7 @@ interface PlannedContent {
   assets: AssetState[];
   assetWarnings: WarningState[];
   plannedSidecars: PlannedUnsupportedSidecar[];
-  blocks?: BlockNode[];
+  assetPlan?: PlannedPageAssets;
 }
 
 function hash(value: string): string {
@@ -186,6 +200,28 @@ function assetFingerprint(assets: readonly AssetState[]): string {
     )
     .sort()
     .join('|');
+}
+
+function selectedAssetPlan(
+  item: PlannedContent,
+): PlannedPageAssets | undefined {
+  const plan = item.assetPlan;
+  if (!plan) return undefined;
+  const { type, reasons } = item.reconciliation;
+  if (
+    type !== 'CREATE' &&
+    type !== 'UPDATE' &&
+    !(type === 'MOVE' && reasons.length > 1)
+  ) {
+    return undefined;
+  }
+  const force = reasons.some((reason) =>
+    ['content', 'last_edited_time', 'asset'].includes(reason),
+  );
+  return {
+    ...plan,
+    downloads: plan.downloads.filter(({ cached }) => force || !cached),
+  };
 }
 
 function storedFingerprint(
@@ -432,14 +468,14 @@ export async function runSyncOrchestrator(
         let body = sourceBody;
         let plannedAssets: AssetState[] = [];
         let assetWarnings: WarningState[] = [];
-        let blocks: BlockNode[] | undefined;
+        let plannedAssetPlan: PlannedPageAssets | undefined;
         if (
           !indexedRows &&
           dependencies.retrieveBlocks &&
           dependencies.downloadAsset
         ) {
-          blocks = await dependencies.retrieveBlocks(resource.notionId);
-          const assetPlan = await processPageAssets(
+          const blocks = await dependencies.retrieveBlocks(resource.notionId);
+          const assetPlan = await planPageAssets(
             {
               pageId: resource.notionId,
               markdown: body,
@@ -458,16 +494,15 @@ export async function runSyncOrchestrator(
               externalAssetAllowedExtensions:
                 config.sync.external_asset_allowed_extensions,
               downloadExternalAssets: config.sync.download_external_assets,
-              apply: false,
             },
             {
               getAsset: (stableKey) => dependencies.store.getAsset(stableKey),
-              download: (request) => dependencies.downloadAsset!(request),
             },
           );
           body = assetPlan.markdown;
           plannedAssets = assetPlan.assets;
           assetWarnings = assetPlan.warnings;
+          plannedAssetPlan = assetPlan;
         }
         if (!indexedRows) body = await resolveInternalLinks(body, idToPath);
         const contentHash = hash(body);
@@ -554,11 +589,10 @@ export async function runSyncOrchestrator(
           pageId: resource.notionId,
           sidecars: retrieved.sidecars,
         });
-        planned.push({
+        const plannedItem: PlannedContent = {
           resource,
           path,
           body,
-          sourceBody,
           contentHash,
           structureHash,
           warnings,
@@ -570,13 +604,32 @@ export async function runSyncOrchestrator(
           assets: plannedAssets,
           assetWarnings,
           plannedSidecars,
-          ...(blocks ? { blocks } : {}),
-        });
+          ...(plannedAssetPlan ? { assetPlan: plannedAssetPlan } : {}),
+        };
+        planned.push(plannedItem);
         actions.push({
           type: reconciliation.type,
           notionId: resource.notionId,
           path: path.expectedPath,
         });
+        if (dryRun) {
+          const assetPlan = selectedAssetPlan(plannedItem);
+          for (const download of assetPlan?.downloads ?? []) {
+            await assertAssetPathSafe(
+              config.obsidian.managedPath,
+              download.target.absolutePath,
+            );
+            if (
+              (await inspectAssetTargetForPlan(download.target)) === 'deferred'
+            ) {
+              actions.push({
+                type: 'ASSET_DEFERRED',
+                stableKey: download.target.stableKey,
+                path: download.target.localPath,
+              });
+            }
+          }
+        }
       }
       actions.push(
         ...census.warnings.map((warning) => ({
@@ -792,33 +845,17 @@ export async function runSyncOrchestrator(
           type === 'UPDATE' ||
           (type === 'MOVE' && item.reconciliation.reasons.length > 1)
         ) {
-          if (item.blocks && dependencies.downloadAsset) {
-            const processed = await processPageAssets(
+          const assetPlan = selectedAssetPlan(item);
+          if (assetPlan && dependencies.downloadAsset) {
+            const processed = await applyPlannedPageAssets(
               {
-                pageId: item.resource.notionId,
-                markdown: item.sourceBody,
-                pagePath: item.path.expectedPath,
-                blocks: item.blocks,
                 managedRoot: config.obsidian.managedPath,
                 runId,
                 now: startedAt,
                 maximumBytes: config.sync.maximum_asset_size_mb * 1024 * 1024,
-                notionAssetAllowedContentTypes:
-                  config.sync.notion_asset_allowed_content_types,
-                notionAssetAllowedExtensions:
-                  config.sync.notion_asset_allowed_extensions,
-                externalAssetAllowedContentTypes:
-                  config.sync.external_asset_allowed_content_types,
-                externalAssetAllowedExtensions:
-                  config.sync.external_asset_allowed_extensions,
-                downloadExternalAssets: config.sync.download_external_assets,
-                apply: true,
-                force: item.reconciliation.reasons.some((reason) =>
-                  ['content', 'last_edited_time', 'asset'].includes(reason),
-                ),
               },
+              assetPlan,
               {
-                getAsset: (stableKey) => dependencies.store.getAsset(stableKey),
                 download: (request) => dependencies.downloadAsset!(request),
               },
             );
@@ -871,7 +908,7 @@ export async function runSyncOrchestrator(
           });
         }
         if (type !== 'UNCHANGED') {
-          dependencies.store.transaction(() =>
+          dependencies.store.transaction(() => {
             dependencies.store.upsertResource({
               notionId: item.resource.notionId,
               objectType: item.resource.objectType,
@@ -892,11 +929,11 @@ export async function runSyncOrchestrator(
               missingCount: 0,
               createdAt: item.stored?.createdAt ?? startedAt,
               updatedAt: startedAt,
-            }),
-          );
-          for (const asset of item.assets) {
-            dependencies.store.upsertAsset(asset);
-          }
+            });
+            for (const asset of item.assets) {
+              dependencies.store.upsertAsset(asset);
+            }
+          });
           for (const warning of [
             ...item.warnings.map((value) => ({
               runId,
