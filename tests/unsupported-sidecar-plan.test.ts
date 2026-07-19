@@ -6,6 +6,39 @@ const managedRoot = resolve('/tmp/notion-managed');
 const pageId = '11111111-1111-4111-8111-111111111111';
 
 describe('planUnsupportedSidecars', () => {
+  it('payloadがundefinedの場合は3キーのJSONとしてnullを保存する', () => {
+    const [planned] = planUnsupportedSidecars({
+      managedRoot,
+      pageId,
+      sidecars: [{ type: 'future_block', id: 'block-1', payload: undefined }],
+    });
+
+    expect(JSON.parse(planned?.content ?? '')).toEqual({
+      type: 'future_block',
+      id: 'block-1',
+      payload: null,
+    });
+  });
+
+  it.each([
+    ['false', false],
+    ['0', 0],
+    ['空文字', ''],
+    ['null', null],
+  ])('payloadが%sの場合は値を維持する', (_label, payload) => {
+    const [planned] = planUnsupportedSidecars({
+      managedRoot,
+      pageId,
+      sidecars: [{ type: 'future_block', id: 'block-1', payload }],
+    });
+
+    expect(JSON.parse(planned?.content ?? '')).toEqual({
+      type: 'future_block',
+      id: 'block-1',
+      payload,
+    });
+  });
+
   it('同じIDと内容の重複は1つの書き込みに集約する', () => {
     const sidecar = { type: 'future_block', id: 'block-1', payload: { a: 1 } };
 
