@@ -29,7 +29,7 @@ node --env-file=.env dist/cli/index.js sync --config config.yaml
 - Obsidian側は読み取り専用ミラーとして扱ってください。管理対象Markdownを手作業で編集してもNotionへは反映されず、後続同期で上書き・移動される可能性があります。
 - 本ツールは`obsidian.managed_path`配下の、管理マーカーとstate DBが一致するファイルだけを変更します。
 - `obsidian.managed_path`配下の`_unsupported/`は、変換できないブロックを保全するサイドカーJSONのために本ツールが予約する領域です。この配下のファイルは、パス規約・state DBの記録・既存JSONの形式がすべて本ツールの生成物と一致する場合だけ更新対象とし、条件を満たさないファイル（手作業で置いたJSONなど）は変更せず同期を停止します。`_unsupported/`に手作業でファイルを置かないでください。
-- `obsidian.managed_path`配下の`_assets/`は、ダウンロードした添付ファイルのために本ツールが予約する領域です。この配下のファイルは、ダウンロード内容とハッシュが一致する場合だけ取り込み（adopt）、state DBが記録した旧ハッシュと一致する場合だけ新しい内容へ更新します。どちらとも一致しない内容（手作業で置いたファイルなど）は変更せず同期を停止します。取り込んだファイルは以降、本ツールの更新対象になります。`_assets/`に手作業でファイルを置かないでください。なお、添付のダウンロード自体の失敗（ネットワーク・サイズ超過・許可外の種類・不正なURL）は警告として記録し、リモートのURLを残したまま同期を続けます（保存先の所有が確認できない場合の停止とは区別します）。
+- `obsidian.managed_path`配下の`_assets/`は、ダウンロードした添付ファイルのために本ツールが予約する領域です。通常の再ダウンロード不要経路では、state DBに記録された正準パスの存在を確認してcached localを採用します。実際にダウンロードを試みた経路では、ダウンロード内容とハッシュが一致する場合だけ取り込み（adopt）、state DBが記録した旧ハッシュと一致する場合だけ新しい内容へ更新します。ダウンロードに失敗した場合も、旧ハッシュとsizeの両方が実ファイルと一致すると確認できたときだけcached localを維持し、それ以外はリモートURLを残します。所有を確認できない内容（手作業で置いたファイルなど）は変更せず同期を停止します。取り込んだファイルは以降、本ツールの更新対象になります。`_assets/`に手作業でファイルを置かないでください。
 
 ## 必要要件
 
@@ -190,11 +190,13 @@ Notionを復元できない緊急時は`.trash`から管理対象外の場所へ
 
 ### アセット
 
-Notionの画像・ファイルは`<managed>/_assets/<page-id>/`へ保存し、Markdownをローカル相対参照に書き換えます。Notion由来の添付は一般的なOffice文書、圧縮ファイル、動画、音声、テキスト形式を含む`notion_asset_allowed_content_types`と`notion_asset_allowed_extensions`で検査します。外部URLは既定でダウンロードせず、`download_external_assets: true`のときだけ、より限定的な`external_asset_allowed_content_types`と`external_asset_allowed_extensions`で検査して取得します。正規の形式を追加する場合は、対応するContent-Typeと拡張子を対象sourceの両許可リストへ追加してください。取得失敗、許可外形式、サイズ超過時はwarningを記録し、MarkdownのリモートURLを維持します。
+Notionの画像・ファイルは`<managed>/_assets/<page-id>/`へ保存し、Markdownをローカル相対参照に書き換えます。Notion由来の添付は一般的なOffice文書、圧縮ファイル、動画、音声、テキスト形式を含む`notion_asset_allowed_content_types`と`notion_asset_allowed_extensions`で検査します。外部URLは既定でダウンロードせず、`download_external_assets: true`のときだけ、より限定的な`external_asset_allowed_content_types`と`external_asset_allowed_extensions`で検査して取得します。正規の形式を追加する場合は、対応するContent-Typeと拡張子を対象sourceの両許可リストへ追加してください。取得失敗、許可外形式、サイズ超過時は、署名query・認証情報・ローカル絶対パスをマスクした原因をwarningへ記録します。実際の取得に失敗した場合は、state DBの旧hashとsizeに一致する通常ファイルだけをlocal fallbackとして採用し、確認できなければMarkdownのリモートURLを維持します。通常のno-download cache経路はhashを再計算せず、正準パスの存在確認だけでlocal URLを維持します。同じremote URLが複数のNotionブロックに対応するなど対応付けが曖昧なアセットは、warningを記録して取得せずremote URLを維持します。取得計画に載った候補同士で同じremote URLが異なるlocal pathへ対応する場合だけ、安全性検証でPlanを停止します。
 
 **既知の制約:** 拒否されたNotion添付の署名付きリモートURLは将来失効する可能性があります。必要な形式が拒否された場合は、Notion側の許可リストへContent-Typeと拡張子を追加して、URLが有効なうちにページを再同期してください。
 
 **既知の制約:** ローカルのアセットファイルが存在する場合、リモートの内容変更は検知しません。変更を反映したい場合は、対象の`_assets`内ファイルだけを削除し、`sync --page-id <page-id>`または通常のsyncを再実行してください。事前にVaultをバックアップし、削除後の`plan`で再取得対象を確認してください。
+
+**既知の制約:** ダウンロード失敗時のlocal fallbackは、保存先を`lstat`で通常ファイルと確認してから内容を読み取ります。確認後に同じパスが差し替えられる競合窓は残っており、完全なTOCTOU防止ではありません。file handleを使った検査による窓の縮小は、通常のアセット確定処理とfallback verifierの両方を対象とする後続改善です。
 
 ### Data Source
 

@@ -439,15 +439,15 @@ describe('runSyncOrchestrator', () => {
       `_assets/${rootId}/${blockId}--photo.png`,
     );
     await rm(assetTarget);
-    const unchangedDryRun = await runSyncOrchestrator(
+    const missingAssetDryRun = await runSyncOrchestrator(
       config,
       { dryRun: true },
       dependencies,
     );
-    expect(unchangedDryRun.actions).toContainEqual(
-      expect.objectContaining({ type: 'UNCHANGED', notionId: rootId }),
+    expect(missingAssetDryRun.actions).toContainEqual(
+      expect.objectContaining({ type: 'UPDATE', notionId: rootId }),
     );
-    expect(unchangedDryRun.actions).not.toContainEqual(
+    expect(missingAssetDryRun.actions).not.toContainEqual(
       expect.objectContaining({ type: 'ASSET_DEFERRED' }),
     );
     expect(downloadAsset).toHaveBeenCalledTimes(1);
@@ -467,6 +467,71 @@ describe('runSyncOrchestrator', () => {
     expect(dryRun.partialFailure).toBe(false);
     expect(dryRun.counts).toMatchObject({ update: 1, error: 0 });
     expect(downloadAsset).toHaveBeenCalledTimes(1);
+  });
+
+  it('title・config変更とfull再同期では存在するcached assetのlocal URLとstateを維持する', async () => {
+    const { store, config, census, lock } = await fixture();
+    const blockId = '44444444-4444-4444-8444-444444444444';
+    const assetUrl = 'https://files.example/photo.png?signature=temporary';
+    const downloadAsset = vi.fn(
+      async ({ destination }: { destination: string }) => {
+        await mkdir(join(destination, '..'), { recursive: true });
+        await writeFile(destination, 'image');
+        return {
+          size: 5,
+          contentHash:
+            '6105d6cc76af400325e94d588ce511be5bfdbb73b437dc51eca43917d7a43e3d',
+          contentType: 'image/png',
+        };
+      },
+    );
+    const dependencies = {
+      store,
+      lock,
+      census: () => Promise.resolve(census),
+      retrieveContent: () =>
+        Promise.resolve({
+          markdown: `![Photo](${assetUrl})`,
+          warnings: [],
+          sidecars: [],
+        }),
+      retrieveBlocks: () =>
+        Promise.resolve([
+          {
+            block: {
+              id: blockId,
+              type: 'image',
+              image: { type: 'file', file: { url: assetUrl }, caption: [] },
+            },
+            children: [],
+          },
+        ]),
+      downloadAsset,
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: (() => {
+        let value = 0;
+        return () => `run-cached-update-${++value}`;
+      })(),
+    };
+
+    await runSyncOrchestrator(config, {}, dependencies);
+    census.resources[0]!.title = 'Renamed title';
+    await runSyncOrchestrator(config, {}, dependencies);
+    config.sync.maximum_asset_size_mb = 101;
+    await runSyncOrchestrator(config, {}, dependencies);
+    await runSyncOrchestrator(config, { full: true }, dependencies);
+
+    const markdown = await readFile(
+      join(config.obsidian.managedPath, 'Notes.md'),
+      'utf8',
+    );
+    expect(markdown).toContain(`_assets/${rootId}/${blockId}--photo.png`);
+    expect(markdown).not.toContain(assetUrl);
+    expect(store.getAsset(`${rootId}:${blockId}`)).toMatchObject({
+      localPath: `_assets/${rootId}/${blockId}--photo.png`,
+      lastSeenRunId: 'run-cached-update-4',
+    });
+    expect(downloadAsset).toHaveBeenCalledOnce();
   });
 
   it('同じunsupported sidecarが重複しても1ファイルへ集約しresourceを保存する', async () => {
