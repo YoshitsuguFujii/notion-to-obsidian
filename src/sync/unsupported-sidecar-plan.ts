@@ -22,6 +22,10 @@ export function planUnsupportedSidecars(
 ): PlannedUnsupportedSidecar[] {
   const plannedByPath = new Map<string, PlannedUnsupportedSidecar>();
   for (const sidecar of options.sidecars) {
+    const sidecarWithExplicitPayload = {
+      ...sidecar,
+      payload: sidecar.payload ?? null,
+    };
     const targetPath = unsupportedSidecarPath(
       options.managedRoot,
       options.pageId,
@@ -32,7 +36,7 @@ export function planUnsupportedSidecars(
       sidecarId: sidecar.id,
       actionId: `sidecar:${options.pageId}:${sidecar.id}`,
       targetPath,
-      content: `${JSON.stringify(sidecar, null, 2)}\n`,
+      content: `${JSON.stringify(sidecarWithExplicitPayload, null, 2)}\n`,
     };
     const collisionKey = outputPathCollisionKey(targetPath);
     const existing = plannedByPath.get(collisionKey);

@@ -1,4 +1,12 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -6,6 +14,8 @@ import {
   inspectUnsupportedSidecarTarget,
   unsupportedSidecarPath,
 } from '../src/filesystem/unsupported-sidecar-target.js';
+import { writeMarkdownAtomic } from '../src/filesystem/atomic-write.js';
+import { planUnsupportedSidecars } from '../src/sync/unsupported-sidecar-plan.js';
 
 const pageId = '11111111-1111-4111-8111-111111111111';
 const sidecarId = '22222222-2222-4222-8222-222222222222';
@@ -36,6 +46,53 @@ afterEach(async () => {
 });
 
 describe('inspectUnsupportedSidecarTarget', () => {
+  it('payloadがundefinedのサイドカーは次回も管理対象となり同じ内容ならmtimeを維持する', async () => {
+    const { managedRoot, targetPath } = await fixture();
+    const [planned] = planUnsupportedSidecars({
+      managedRoot,
+      pageId,
+      sidecars: [{ type: 'future_block', id: sidecarId, payload: undefined }],
+    });
+    const content = planned?.content ?? '';
+    const ownership = {
+      kind: 'unsupported-sidecar' as const,
+      expectedPageId: pageId,
+      expectedSidecarId: sidecarId,
+      storedPage: { notionId: pageId },
+    };
+    await writeMarkdownAtomic(targetPath, content, {
+      managedRoot,
+      ownership,
+    });
+    const fixedTime = new Date('2026-07-19T00:00:00.000Z');
+    await utimes(targetPath, fixedTime, fixedTime);
+    const before = (await stat(targetPath)).mtimeMs;
+
+    await expect(
+      inspectUnsupportedSidecarTarget({
+        managedRoot,
+        targetPath,
+        expectedPageId: pageId,
+        expectedSidecarId: sidecarId,
+        storedPage: { notionId: pageId },
+      }),
+    ).resolves.toEqual({ kind: 'owned', content });
+
+    const [sameInput] = planUnsupportedSidecars({
+      managedRoot,
+      pageId,
+      sidecars: [{ type: 'future_block', id: sidecarId, payload: undefined }],
+    });
+    await expect(
+      writeMarkdownAtomic(targetPath, sameInput?.content ?? '', {
+        managedRoot,
+        ownership,
+      }),
+    ).resolves.toBe('unchanged');
+    expect(await readFile(targetPath, 'utf8')).toBe(content);
+    expect((await stat(targetPath)).mtimeMs).toBe(before);
+  });
+
   it('対象が存在しない場合は新規作成可能と分類する', async () => {
     const { managedRoot, targetPath } = await fixture();
 
