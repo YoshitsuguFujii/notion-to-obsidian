@@ -3,6 +3,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rm,
   stat,
   symlink,
   writeFile,
@@ -11,7 +12,12 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { processPageAssets } from '../src/assets/processor.js';
+import {
+  applyPlannedPageAssets,
+  planPageAssets,
+  processPageAssets,
+  type PlannedPageAssets,
+} from '../src/assets/processor.js';
 import { InfraError } from '../src/errors.js';
 import type { BlockNode } from '../src/notion/blocks.js';
 import type { AssetState } from '../src/storage/state-store.js';
@@ -45,6 +51,16 @@ function downloaded(value: string) {
     await mkdir(join(destination, '..'), { recursive: true });
     await writeFile(destination, value);
     return { size: Buffer.byteLength(value), contentHash: sha256(value) };
+  };
+}
+
+function unreadableStream(): AsyncIterable<Buffer> {
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => Promise.reject(new Error('read unavailable')),
+      };
+    },
   };
 }
 
@@ -218,8 +234,52 @@ describe('processPageAssets', () => {
     );
     expect(result.markdown).toContain(url);
     expect(result.warnings).toEqual([
-      expect.objectContaining({ warningType: 'asset_download_failed' }),
+      expect.objectContaining({
+        warningType: 'asset_download_failed',
+        message:
+          'Asset download failed; the remote URL was kept. Check the asset warning and retry the sync. Reason: too large',
+      }),
     ]);
+  });
+
+  it('download失敗のwarningは署名query・認証情報・絶対パスをマスクする', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const sensitivePath = ['', 'private-home', 'vault', 'file.png'].join('/');
+    const result = await processPageAssets(
+      {
+        pageId,
+        markdown: `![Photo](${url})`,
+        pagePath: 'Page.md',
+        blocks,
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 1,
+        ...assetAllowlists,
+        downloadExternalAssets: false,
+        apply: true,
+      },
+      {
+        getAsset: () => undefined,
+        download: () =>
+          Promise.reject(
+            new Error(
+              `request https://files.example/photo.png?signature=secret failed with Bearer secret-token token=secret-value NOTION_TOKEN=notion-secret while opening '${sensitivePath}'`,
+            ),
+          ),
+      },
+    );
+
+    const message = result.warnings[0]?.message ?? '';
+    expect(message).toContain('https://files.example/photo.png?[REDACTED]');
+    expect(message).toContain('Bearer [REDACTED]');
+    expect(message).toContain('token=[REDACTED]');
+    expect(message).toContain('[REDACTED_PATH]');
+    expect(message).not.toContain('signature=secret');
+    expect(message).not.toContain('secret-token');
+    expect(message).not.toContain('secret-value');
+    expect(message).not.toContain('notion-secret');
+    expect(message).not.toContain(sensitivePath);
   });
 
   it('外部assetは設定無効時にdownloadしない', async () => {
@@ -642,5 +702,369 @@ describe('processPageAssets', () => {
     expect(result.warnings).toEqual([
       expect.objectContaining({ warningType: 'asset_download_failed' }),
     ]);
+  });
+
+  it('再取得に失敗したアセットは保存済みの内容を確認できない限りremote URLを維持する', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const localPath = `_assets/${pageId}/${blockId}--photo.png`;
+    const previous: AssetState = {
+      stableKey: `${pageId}:${blockId}`,
+      pageId,
+      blockId,
+      localPath,
+      originalName: 'photo.png',
+      size: 5,
+      contentHash: sha256('image'),
+    };
+
+    const result = await processPageAssets(
+      {
+        pageId,
+        markdown: `![Photo](${url})`,
+        pagePath: 'Notes/Page.md',
+        blocks,
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 100,
+        ...assetAllowlists,
+        downloadExternalAssets: false,
+        apply: true,
+        force: true,
+      },
+      {
+        getAsset: () => previous,
+        download: () => Promise.reject(new Error('network unavailable')),
+      },
+    );
+
+    expect(result.markdown).toContain(url);
+    expect(result.assets).toEqual([]);
+    expect(result.warnings[0]?.message).toBe(
+      'Asset download failed; the cached file could not be verified, so the remote URL was kept. Check the asset warning and retry the sync. Reason: network unavailable',
+    );
+  });
+
+  it('再取得に失敗しても保存済みのhashとsizeに一致する通常ファイルはlocal URLを維持する', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const localPath = `_assets/${pageId}/${blockId}--photo.png`;
+    await mkdir(join(root, localPath, '..'), { recursive: true });
+    await writeFile(join(root, localPath), 'image');
+    const previous: AssetState = {
+      stableKey: `${pageId}:${blockId}`,
+      pageId,
+      blockId,
+      localPath,
+      originalName: 'photo.png',
+      size: 5,
+      contentHash: sha256('image'),
+    };
+
+    const result = await processPageAssets(
+      {
+        pageId,
+        markdown: `![Photo](${url})`,
+        pagePath: 'Notes/Page.md',
+        blocks,
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 100,
+        ...assetAllowlists,
+        downloadExternalAssets: false,
+        apply: true,
+        force: true,
+      },
+      {
+        getAsset: () => previous,
+        download: () => Promise.reject(new Error('network unavailable')),
+      },
+    );
+
+    expect(result.markdown).toContain(`../${localPath}`);
+    expect(result.assets).toEqual([{ ...previous, lastSeenRunId: 'run' }]);
+    expect(result.warnings[0]?.message).toBe(
+      'Asset download failed; the existing cached file was verified and kept. The asset will be retried on a later sync. Reason: network unavailable',
+    );
+  });
+
+  it.each([
+    ['hashが保存されていない', { size: 5 }, 'image'],
+    ['sizeが一致しない', { size: 4, contentHash: sha256('image') }, 'image'],
+    ['hashが一致しない', { size: 5, contentHash: sha256('other') }, 'image'],
+  ])(
+    '%sアセットは再取得失敗時にremote URLを維持する',
+    async (_condition, metadata, diskContent) => {
+      const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+      const localPath = `_assets/${pageId}/${blockId}--photo.png`;
+      await mkdir(join(root, localPath, '..'), { recursive: true });
+      await writeFile(join(root, localPath), diskContent);
+      const previous: AssetState = {
+        stableKey: `${pageId}:${blockId}`,
+        pageId,
+        blockId,
+        localPath,
+        originalName: 'photo.png',
+        ...metadata,
+      };
+
+      const result = await processPageAssets(
+        {
+          pageId,
+          markdown: `![Photo](${url})`,
+          pagePath: 'Notes/Page.md',
+          blocks,
+          managedRoot: root,
+          runId: 'run',
+          now: '2026-07-12T00:00:00.000Z',
+          maximumBytes: 100,
+          ...assetAllowlists,
+          downloadExternalAssets: false,
+          apply: true,
+          force: true,
+        },
+        {
+          getAsset: () => previous,
+          download: () => Promise.reject(new Error('network unavailable')),
+        },
+      );
+
+      expect(result.markdown).toContain(url);
+      expect(result.assets).toEqual([]);
+    },
+  );
+
+  it('保存済みファイルを読み取れない場合は再取得失敗時にremote URLを維持する', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const localPath = `_assets/${pageId}/${blockId}--photo.png`;
+    await mkdir(join(root, localPath, '..'), { recursive: true });
+    await writeFile(join(root, localPath), 'image');
+    const previous: AssetState = {
+      stableKey: `${pageId}:${blockId}`,
+      pageId,
+      blockId,
+      localPath,
+      originalName: 'photo.png',
+      size: 5,
+      contentHash: sha256('image'),
+    };
+
+    const result = await processPageAssets(
+      {
+        pageId,
+        markdown: `![Photo](${url})`,
+        pagePath: 'Notes/Page.md',
+        blocks,
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 100,
+        ...assetAllowlists,
+        downloadExternalAssets: false,
+        apply: true,
+        force: true,
+      },
+      {
+        getAsset: () => previous,
+        download: () => Promise.reject(new Error('network unavailable')),
+        fallbackFileSystem: {
+          createReadStream: unreadableStream,
+        },
+      },
+    );
+
+    expect(result.markdown).toContain(url);
+    expect(result.assets).toEqual([]);
+  });
+
+  it.each(['symlink', 'directory'] as const)(
+    '保存先が%sの場合はsafetyとして停止する',
+    async (kind) => {
+      const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+      const localPath = `_assets/${pageId}/${blockId}--photo.png`;
+      const target = join(root, localPath);
+      await mkdir(join(target, '..'), { recursive: true });
+      await writeFile(target, 'image');
+      const previous: AssetState = {
+        stableKey: `${pageId}:${blockId}`,
+        pageId,
+        blockId,
+        localPath,
+        originalName: 'photo.png',
+        size: 5,
+        contentHash: sha256('image'),
+      };
+      await expect(
+        processPageAssets(
+          {
+            pageId,
+            markdown: `![Photo](${url})`,
+            pagePath: 'Notes/Page.md',
+            blocks,
+            managedRoot: root,
+            runId: 'run',
+            now: '2026-07-12T00:00:00.000Z',
+            maximumBytes: 100,
+            ...assetAllowlists,
+            downloadExternalAssets: false,
+            apply: true,
+            force: true,
+          },
+          {
+            getAsset: () => previous,
+            download: async () => {
+              await rm(target);
+              if (kind === 'symlink') {
+                await symlink(join(root, '..', 'outside.png'), target);
+              } else {
+                await mkdir(target);
+              }
+              throw new Error('network unavailable');
+            },
+          },
+        ),
+      ).rejects.toMatchObject({ category: 'safety' });
+    },
+  );
+
+  it('同じアセットの取得結果が混在しても成功した内容を1件だけ採用する', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const basePlan = await planPageAssets(
+      {
+        pageId,
+        markdown: `![Photo](${url})`,
+        pagePath: 'Notes/Page.md',
+        blocks,
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 100,
+        ...assetAllowlists,
+        downloadExternalAssets: false,
+      },
+      { getAsset: () => undefined },
+    );
+    const duplicatePlan: PlannedPageAssets = {
+      ...basePlan,
+      downloads: [...basePlan.downloads, ...basePlan.downloads],
+    };
+    const apply = async (failureFirst: boolean) => {
+      let attempt = 0;
+      return applyPlannedPageAssets(
+        {
+          managedRoot: root,
+          runId: 'run',
+          now: '2026-07-12T00:00:00.000Z',
+          maximumBytes: 100,
+        },
+        duplicatePlan,
+        {
+          download: (request) => {
+            const shouldFail = failureFirst ? attempt++ === 0 : attempt++ === 1;
+            return shouldFail
+              ? Promise.reject(new Error('network unavailable'))
+              : downloaded('image')(request);
+          },
+        },
+      );
+    };
+
+    const failureFirst = await apply(true);
+    const successFirst = await apply(false);
+
+    expect(failureFirst.assets).toHaveLength(1);
+    expect(successFirst.assets).toEqual(failureFirst.assets);
+    expect(failureFirst.markdown).toContain('../_assets/');
+    expect(successFirst.markdown).toBe(failureFirst.markdown);
+  });
+
+  it('取得対象とno-download cacheが同じページにある場合はそれぞれのlocal URLとstateを採用する', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const cachedUrl = 'https://files.example/cached.png';
+    const fetchedUrl = 'https://files.example/fetched.png';
+    const fetchedBlockId = '33333333-3333-4333-8333-333333333333';
+    const cachedLocalPath = `_assets/${pageId}/${blockId}--cached.png`;
+    const cached: AssetState = {
+      stableKey: `${pageId}:${blockId}`,
+      pageId,
+      blockId,
+      localPath: cachedLocalPath,
+      originalName: 'cached.png',
+      size: 6,
+      contentHash: sha256('cached'),
+    };
+    await mkdir(join(root, cachedLocalPath, '..'), { recursive: true });
+    await writeFile(join(root, cachedLocalPath), 'cached');
+    const mixedBlocks: BlockNode[] = [
+      {
+        block: {
+          id: blockId,
+          type: 'image',
+          image: {
+            type: 'file',
+            file: { url: cachedUrl },
+            caption: [],
+          },
+        },
+        children: [],
+      },
+      {
+        block: {
+          id: fetchedBlockId,
+          type: 'image',
+          image: {
+            type: 'file',
+            file: { url: fetchedUrl },
+            caption: [],
+          },
+        },
+        children: [],
+      },
+    ];
+    const download = vi.fn(
+      async (request: { url: URL; destination: string }) => {
+        const { destination } = request;
+        await mkdir(join(destination, '..'), { recursive: true });
+        await writeFile(destination, 'fetched');
+        return {
+          size: 7,
+          contentHash: sha256('fetched'),
+        };
+      },
+    );
+
+    const result = await processPageAssets(
+      {
+        pageId,
+        markdown: `![Cached](${cachedUrl})\n\n![Fetched](${fetchedUrl})`,
+        pagePath: 'Notes/Page.md',
+        blocks: mixedBlocks,
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 100,
+        ...assetAllowlists,
+        downloadExternalAssets: false,
+        apply: true,
+      },
+      {
+        getAsset: (stableKey) =>
+          stableKey === cached.stableKey ? cached : undefined,
+        download,
+      },
+    );
+
+    expect(result.markdown).toContain(`../${cachedLocalPath}`);
+    expect(result.markdown).toContain(
+      `../_assets/${pageId}/${fetchedBlockId}--fetched.png`,
+    );
+    expect(result.assets).toEqual(
+      expect.arrayContaining([
+        { ...cached, lastSeenRunId: 'run' },
+        expect.objectContaining({ stableKey: `${pageId}:${fetchedBlockId}` }),
+      ]),
+    );
+    expect(download).toHaveBeenCalledOnce();
+    expect(download.mock.calls[0]?.[0].url.href).toBe(fetchedUrl);
   });
 });
