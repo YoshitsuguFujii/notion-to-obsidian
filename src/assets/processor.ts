@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
 import { access, lstat, rm } from 'node:fs/promises';
 import { basename, dirname, extname, join, posix } from 'node:path';
 import type { Nodes } from 'mdast';
@@ -12,6 +11,10 @@ import {
   assertNoSymlinkEscape,
   joinManagedPath,
 } from '../filesystem/safe-path.js';
+import {
+  hashFileWithIdentity,
+  type HashFileWithIdentityDependencies,
+} from '../filesystem/hash-file-with-identity.js';
 import type { DownloadResult } from './http-downloader.js';
 import {
   buildAssetPath,
@@ -55,14 +58,7 @@ interface ProcessAssetsDependencies {
     allowedContentTypes: readonly string[];
     allowedExtensions: readonly string[];
   }): Promise<DownloadResult>;
-  fallbackFileSystem?: {
-    lstat?(path: string): Promise<{
-      isSymbolicLink(): boolean;
-      isFile(): boolean;
-      size: number;
-    }>;
-    createReadStream?(path: string): AsyncIterable<Buffer>;
-  };
+  fallbackFileSystem?: HashFileWithIdentityDependencies;
 }
 
 export interface PlannedAssetDownload {
@@ -334,34 +330,43 @@ async function verifyPreviousAsset(
   await assertAssetPathSafe(input.managedRoot, target.absolutePath);
   const previous = target.previous;
   const fallbackFileSystem = dependencies.fallbackFileSystem;
-  let current;
-  try {
-    current = await (fallbackFileSystem?.lstat ?? lstat)(target.absolutePath);
-  } catch {
+  if (previous?.contentHash === undefined || previous.size === undefined) {
+    let current;
+    try {
+      current = await (
+        fallbackFileSystem?.lstat ??
+        ((candidate) => lstat(candidate, { bigint: true }))
+      )(target.absolutePath);
+    } catch {
+      return undefined;
+    }
+    if (!current.isFile()) {
+      throw new DomainError(
+        'safety',
+        'Asset fallback target is not a regular file',
+      );
+    }
     return undefined;
   }
-  if (current.isSymbolicLink() || !current.isFile()) {
+  const inspection = await hashFileWithIdentity(
+    target.absolutePath,
+    [previous.size],
+    fallbackFileSystem,
+  );
+  if (inspection.kind === 'not-regular' || inspection.kind === 'changed') {
     throw new DomainError(
       'safety',
-      'Asset fallback target is not a regular file',
+      'Asset fallback target changed or is not a regular file; inspect the cached asset before syncing again',
     );
   }
-  if (previous?.contentHash === undefined || previous.size === undefined) {
-    return undefined;
+  if (inspection.kind === 'unsupported-no-follow') {
+    throw new DomainError(
+      'safety',
+      'Asset fallback cannot be verified because safe file opening is unavailable; use an operating system and filesystem that support O_NOFOLLOW',
+    );
   }
-  if (current.size !== previous.size) return undefined;
-  const hash = createHash('sha256');
-  try {
-    const content = fallbackFileSystem?.createReadStream
-      ? fallbackFileSystem.createReadStream(target.absolutePath)
-      : (createReadStream(target.absolutePath) as AsyncIterable<Buffer>);
-    for await (const chunk of content) {
-      hash.update(chunk);
-    }
-  } catch {
-    return undefined;
-  }
-  if (hash.digest('hex') !== previous.contentHash) return undefined;
+  if (inspection.kind !== 'hashed') return undefined;
+  if (inspection.hash !== previous.contentHash) return undefined;
   return { ...previous, lastSeenRunId: input.runId };
 }
 
