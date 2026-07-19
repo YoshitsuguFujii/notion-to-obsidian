@@ -217,16 +217,6 @@ export async function planPageAssets(
 
   for (const [index, candidate] of markdown.entries()) {
     const match = matches[index];
-    const matchedBlock =
-      match?.status === 'matched' ? blockById.get(match.blockId) : undefined;
-    const source = matchedBlock ? 'notion' : 'external';
-    if (
-      !shouldDownloadAsset(source, {
-        downloadExternalAssets: input.downloadExternalAssets,
-      }) ||
-      (!matchedBlock && candidate.kind !== 'image')
-    )
-      continue;
     if (match?.status === 'ambiguous') {
       warnings.push({
         runId: input.runId,
@@ -237,6 +227,16 @@ export async function planPageAssets(
       });
       continue;
     }
+    const matchedBlock =
+      match?.status === 'matched' ? blockById.get(match.blockId) : undefined;
+    const source = matchedBlock ? 'notion' : 'external';
+    if (
+      !shouldDownloadAsset(source, {
+        downloadExternalAssets: input.downloadExternalAssets,
+      }) ||
+      (!matchedBlock && candidate.kind !== 'image')
+    )
+      continue;
     const blockId =
       matchedBlock?.blockId ?? `external-${shortHash(candidate.url)}`;
     const originalName =
@@ -287,6 +287,17 @@ export async function planPageAssets(
         relativePath,
       });
     }
+  }
+  const pathByRemoteUrl = new Map<string, string>();
+  for (const { remoteUrl, relativePath } of downloads) {
+    const establishedPath = pathByRemoteUrl.get(remoteUrl);
+    if (establishedPath !== undefined && establishedPath !== relativePath) {
+      throw new DomainError(
+        'safety',
+        'The same asset URL resolves to multiple local paths',
+      );
+    }
+    pathByRemoteUrl.set(remoteUrl, relativePath);
   }
   return {
     sourceMarkdown: input.markdown,

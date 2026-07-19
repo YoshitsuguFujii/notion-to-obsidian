@@ -1,4 +1,5 @@
 import {
+  access,
   mkdir,
   mkdtemp,
   readFile,
@@ -1066,5 +1067,47 @@ describe('processPageAssets', () => {
     );
     expect(download).toHaveBeenCalledOnce();
     expect(download.mock.calls[0]?.[0].url.href).toBe(fetchedUrl);
+  });
+
+  it('同じremote URLが複数ブロックに対応する場合は警告を記録し取得しない', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const anotherBlockId = '33333333-3333-4333-8333-333333333333';
+    const collidingBlocks: BlockNode[] = [
+      ...blocks,
+      {
+        block: {
+          id: anotherBlockId,
+          type: 'image',
+          image: { type: 'file', file: { url }, caption: [] },
+        },
+        children: [],
+      },
+    ];
+
+    const download = vi.fn(downloaded('image'));
+    const result = await processPageAssets(
+      {
+        pageId,
+        markdown: `![First](${url})\n\n![Second](${url})`,
+        pagePath: 'Notes/Page.md',
+        blocks: collidingBlocks,
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 100,
+        ...assetAllowlists,
+        downloadExternalAssets: false,
+        apply: false,
+      },
+      { getAsset: () => undefined, download },
+    );
+
+    expect(result.markdown).toContain(`![First](${url})`);
+    expect(result.markdown).toContain(`![Second](${url})`);
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({ warningType: 'asset_mapping_ambiguous' }),
+    );
+    expect(download).not.toHaveBeenCalled();
+    await expect(access(join(root, '_assets'))).rejects.toThrow();
   });
 });
