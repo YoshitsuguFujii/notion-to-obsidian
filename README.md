@@ -35,7 +35,8 @@ node --env-file=.env dist/cli/index.js sync --config config.yaml
 
 - Node.js 22以上
 - npm
-- macOSまたはNode.jsと`better-sqlite3`が動作するOS
+- macOSまたはNode.jsと`better-sqlite3`が動作するOS。動作確認しているのはmacOSとLinuxです
+- **アセット取得にはPOSIXの`O_NOFOLLOW`が必要です。** 利用できないOSとfilesystemでは、安全なfile openによる所有確認ができないためアセット取得をsafetyエラーで停止します。Node.jsが`fs.constants.O_NOFOLLOW`を提供しないWindowsが該当します。**Windowsでも、Markdownの同期・MOVE・TRASH・サイドカーの保全は従来どおり動作します。停止するのはアセット取得のみです**（アセットを含むページはリモートURLのまま同期されるのではなく、当該ページの同期がsafetyで停止します）。`O_NOFOLLOW`を利用できる環境へ移すか、アセットを含まない範囲を同期対象にしてください。なお`O_NOFOLLOW`のerrnoはPOSIX実装ごとに差があり、動作確認しているmacOSとLinux以外ではsymlinkの検出がsafetyではなくstorageエラーとして分類される可能性があります（いずれも停止するため、管理外ファイルを書き換えることはありません）
 - 既存のObsidian Vault
 - 読み取り権限のNotion Internal Integration
 - `better-sqlite3`のネイティブビルドが必要な環境ではXcode Command Line Tools: `xcode-select --install`
@@ -196,7 +197,7 @@ Notionの画像・ファイルは`<managed>/_assets/<page-id>/`へ保存し、Ma
 
 **既知の制約:** ローカルのアセットファイルが存在する場合、リモートの内容変更は検知しません。変更を反映したい場合は、対象の`_assets`内ファイルだけを削除し、`sync --page-id <page-id>`または通常のsyncを再実行してください。事前にVaultをバックアップし、削除後の`plan`で再取得対象を確認してください。
 
-**既知の制約:** ダウンロード失敗時のlocal fallbackは、保存先を`lstat`で通常ファイルと確認してから内容を読み取ります。確認後に同じパスが差し替えられる競合窓は残っており、完全なTOCTOU防止ではありません。file handleを使った検査による窓の縮小は、通常のアセット確定処理とfallback verifierの両方を対象とする後続改善です。
+**既知の制約:** アセットの所有確認とダウンロード失敗時のlocal fallbackは、`O_NOFOLLOW | O_NONBLOCK`で開いた同一file handleから内容を読み、読取前後のidentityと読取直後のpathを照合して競合窓を縮小します。adoptでは最終照合からstate DB保存まで、managed updateでは最終照合から`rename`までに差し替えの窓が残ります。同じsizeとmetadataへ復元された同一inodeの変更も検出できないため、完全なTOCTOU防止ではありません。従来は`O_NOFOLLOW`を利用できない環境でもアセット取得を試行しましたが、安全なfile openを保証できない環境を新たにsafety停止の対象とする意図的な互換差分があります。
 
 ### Data Source
 

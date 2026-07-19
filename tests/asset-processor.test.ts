@@ -12,6 +12,7 @@ import {
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
   applyPlannedPageAssets,
@@ -22,6 +23,10 @@ import {
 import { InfraError } from '../src/errors.js';
 import type { BlockNode } from '../src/notion/blocks.js';
 import type { AssetState } from '../src/storage/state-store.js';
+import type {
+  FileIdentityStat,
+  HashFileHandle,
+} from '../src/filesystem/hash-file-with-identity.js';
 
 const pageId = '11111111-1111-4111-8111-111111111111';
 const blockId = '22222222-2222-4222-8222-222222222222';
@@ -55,13 +60,31 @@ function downloaded(value: string) {
   };
 }
 
-function unreadableStream(): AsyncIterable<Buffer> {
+function fallbackStat(
+  overrides: Partial<Omit<FileIdentityStat, 'isFile'>> = {},
+): FileIdentityStat {
   return {
-    [Symbol.asyncIterator]() {
-      return {
-        next: () => Promise.reject(new Error('read unavailable')),
-      };
-    },
+    dev: 1n,
+    ino: 2n,
+    size: 5n,
+    mtimeNs: 3n,
+    ctimeNs: 4n,
+    isFile: () => true,
+    ...overrides,
+  };
+}
+
+function fallbackHandle(options: {
+  stats: FileIdentityStat[];
+  content?: AsyncIterable<Buffer>;
+}): HashFileHandle {
+  let statIndex = 0;
+  return {
+    stat: () =>
+      Promise.resolve(options.stats[statIndex++] ?? options.stats.at(-1)!),
+    createReadStream: () =>
+      options.content ?? Readable.from([Buffer.from('image')]),
+    close: () => Promise.resolve(),
   };
 }
 
@@ -869,7 +892,223 @@ describe('processPageAssets', () => {
         getAsset: () => previous,
         download: () => Promise.reject(new Error('network unavailable')),
         fallbackFileSystem: {
-          createReadStream: unreadableStream,
+          noFollowFlag: 1,
+          open: () =>
+            Promise.resolve(
+              fallbackHandle({
+                stats: [fallbackStat(), fallbackStat()],
+                content: {
+                  [Symbol.asyncIterator]() {
+                    return {
+                      next: () => Promise.reject(new Error('read unavailable')),
+                    };
+                  },
+                },
+              }),
+            ),
+        },
+      },
+    );
+
+    expect(result.markdown).toContain(url);
+    expect(result.assets).toEqual([]);
+  });
+
+  it.each([
+    [
+      '読取中にidentityが変化した',
+      {
+        open: () =>
+          Promise.resolve(
+            fallbackHandle({
+              stats: [fallbackStat(), fallbackStat({ mtimeNs: 9n })],
+            }),
+          ),
+      },
+    ],
+    [
+      '読取後にpathが別のidentityを指した',
+      {
+        open: () =>
+          Promise.resolve(
+            fallbackHandle({ stats: [fallbackStat(), fallbackStat()] }),
+          ),
+        lstat: () => Promise.resolve(fallbackStat({ ino: 9n })),
+      },
+    ],
+  ])(
+    '%sアセットは未検証のlocal URLを採用せずsafetyとして停止する',
+    async (_condition, fileSystem) => {
+      const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+      const localPath = `_assets/${pageId}/${blockId}--photo.png`;
+      await mkdir(join(root, localPath, '..'), { recursive: true });
+      await writeFile(join(root, localPath), 'image');
+      const previous: AssetState = {
+        stableKey: `${pageId}:${blockId}`,
+        pageId,
+        blockId,
+        localPath,
+        originalName: 'photo.png',
+        size: 5,
+        contentHash: sha256('image'),
+      };
+
+      await expect(
+        processPageAssets(
+          {
+            pageId,
+            markdown: `![Photo](${url})`,
+            pagePath: 'Notes/Page.md',
+            blocks,
+            managedRoot: root,
+            runId: 'run',
+            now: '2026-07-12T00:00:00.000Z',
+            maximumBytes: 100,
+            ...assetAllowlists,
+            downloadExternalAssets: false,
+            apply: true,
+            force: true,
+          },
+          {
+            getAsset: () => previous,
+            download: () => Promise.reject(new Error('network unavailable')),
+            fallbackFileSystem: { noFollowFlag: 1, ...fileSystem },
+          },
+        ),
+      ).rejects.toMatchObject({ category: 'safety' });
+    },
+  );
+
+  it('安全なfile openを利用できない場合はfallbackせずsafetyとして停止する', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const localPath = `_assets/${pageId}/${blockId}--photo.png`;
+    await mkdir(join(root, localPath, '..'), { recursive: true });
+    await writeFile(join(root, localPath), 'image');
+    const previous: AssetState = {
+      stableKey: `${pageId}:${blockId}`,
+      pageId,
+      blockId,
+      localPath,
+      originalName: 'photo.png',
+      size: 5,
+      contentHash: sha256('image'),
+    };
+
+    await expect(
+      processPageAssets(
+        {
+          pageId,
+          markdown: `![Photo](${url})`,
+          pagePath: 'Notes/Page.md',
+          blocks,
+          managedRoot: root,
+          runId: 'run',
+          now: '2026-07-12T00:00:00.000Z',
+          maximumBytes: 100,
+          ...assetAllowlists,
+          downloadExternalAssets: false,
+          apply: true,
+          force: true,
+        },
+        {
+          getAsset: () => previous,
+          download: () => Promise.reject(new Error('network unavailable')),
+          fallbackFileSystem: { noFollowFlag: undefined },
+        },
+      ),
+    ).rejects.toMatchObject({ category: 'safety' });
+  });
+
+  it('保存済みのhashがない場合は内容を読まずremote URLを維持する', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const localPath = `_assets/${pageId}/${blockId}--photo.png`;
+    await mkdir(join(root, localPath, '..'), { recursive: true });
+    await writeFile(join(root, localPath), 'image');
+    const previous: AssetState = {
+      stableKey: `${pageId}:${blockId}`,
+      pageId,
+      blockId,
+      localPath,
+      originalName: 'photo.png',
+      size: 5,
+    };
+
+    const result = await processPageAssets(
+      {
+        pageId,
+        markdown: `![Photo](${url})`,
+        pagePath: 'Notes/Page.md',
+        blocks,
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 100,
+        ...assetAllowlists,
+        downloadExternalAssets: false,
+        apply: true,
+        force: true,
+      },
+      {
+        getAsset: () => previous,
+        download: () => Promise.reject(new Error('network unavailable')),
+        fallbackFileSystem: {
+          noFollowFlag: undefined,
+          lstat: () => Promise.resolve(fallbackStat()),
+          open: () => Promise.reject(new Error('content must not be read')),
+        },
+      },
+    );
+
+    expect(result.markdown).toContain(url);
+    expect(result.assets).toEqual([]);
+  });
+
+  it('sizeが一致しない場合は内容を読まずremote URLを維持する', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const localPath = `_assets/${pageId}/${blockId}--photo.png`;
+    await mkdir(join(root, localPath, '..'), { recursive: true });
+    await writeFile(join(root, localPath), 'different');
+    const previous: AssetState = {
+      stableKey: `${pageId}:${blockId}`,
+      pageId,
+      blockId,
+      localPath,
+      originalName: 'photo.png',
+      size: 5,
+      contentHash: sha256('image'),
+    };
+
+    const result = await processPageAssets(
+      {
+        pageId,
+        markdown: `![Photo](${url})`,
+        pagePath: 'Notes/Page.md',
+        blocks,
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 100,
+        ...assetAllowlists,
+        downloadExternalAssets: false,
+        apply: true,
+        force: true,
+      },
+      {
+        getAsset: () => previous,
+        download: () => Promise.reject(new Error('network unavailable')),
+        fallbackFileSystem: {
+          noFollowFlag: 1,
+          open: () =>
+            Promise.resolve(
+              fallbackHandle({
+                stats: [fallbackStat({ size: 9n })],
+                content: {
+                  [Symbol.asyncIterator]() {
+                    throw new Error('content must not be read');
+                  },
+                },
+              }),
+            ),
         },
       },
     );
