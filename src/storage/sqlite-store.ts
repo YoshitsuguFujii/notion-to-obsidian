@@ -10,7 +10,7 @@ import type {
   AssetState,
   WarningState,
 } from './state-store.js';
-import { sql, version } from './migrations/001-initial.js';
+import { migrations } from './migrations/index.js';
 
 export class SqliteStateStore implements StateStore, Disposable {
   private readonly database: Database.Database;
@@ -30,16 +30,18 @@ export class SqliteStateStore implements StateStore, Disposable {
     this.database.exec(
       'CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)',
     );
-    const applied = this.database
-      .prepare('SELECT 1 FROM schema_migrations WHERE version = ?')
-      .get(version);
-    if (!applied)
+    for (const migration of migrations) {
+      const applied = this.database
+        .prepare('SELECT 1 FROM schema_migrations WHERE version = ?')
+        .get(migration.version);
+      if (applied) continue;
       this.database.transaction(() => {
-        this.database.exec(sql);
+        this.database.exec(migration.sql);
         this.database
           .prepare('INSERT INTO schema_migrations(version) VALUES (?)')
-          .run(version);
+          .run(migration.version);
       })();
+    }
   }
   schemaVersion(): number {
     const row = this.database
