@@ -797,6 +797,48 @@ describe('processPageAssets', () => {
     ]);
   });
 
+  it('Notion assetがHTTP(S)以外のURLを持つ場合は元の参照を維持する', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const nonHttpUrl = 'file:///example/photo.png';
+    const nonHttpBlocks: BlockNode[] = [
+      {
+        block: {
+          id: blockId,
+          type: 'image',
+          image: {
+            type: 'file',
+            file: { url: nonHttpUrl },
+            caption: [],
+          },
+        },
+        children: [],
+      },
+    ];
+
+    const result = await processPageAssets(
+      {
+        pageId,
+        markdown: `![Photo](${nonHttpUrl})`,
+        pagePath: 'Notes/Page.md',
+        blocks: nonHttpBlocks,
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 100,
+        ...assetAllowlists,
+        downloadExternalAssets: false,
+        apply: true,
+      },
+      {
+        getAsset: () => undefined,
+        download: () => Promise.reject(new Error('unsupported protocol')),
+      },
+    );
+
+    expect(result.markdown).toContain(nonHttpUrl);
+    expect(result.markdown).not.toContain('null/example/photo.png');
+  });
+
   it('再取得に失敗したアセットは保存済みの内容を確認できない限りremote URLを維持する', async () => {
     const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
     const localPath = `_assets/${pageId}/${blockId}--photo.png`;

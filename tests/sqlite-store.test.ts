@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { sql as initialSchema } from '../src/storage/migrations/001-initial.js';
+import { migrations } from '../src/storage/migrations/index.js';
 import { SqliteStateStore } from '../src/storage/sqlite-store.js';
 
 async function versionOneDatabase(): Promise<{
@@ -78,6 +79,13 @@ async function versionOneDatabase(): Promise<{
 }
 
 describe('SqliteStateStore', () => {
+  it('migrationをversionの昇順かつ重複なしで登録する', () => {
+    const versions = migrations.map(({ version }) => version);
+
+    expect(versions).toEqual([...versions].sort((a, b) => a - b));
+    expect(new Set(versions).size).toBe(versions.length);
+  });
+
   it('全状態テーブルと最新migrationを作成する', () => {
     using store = new SqliteStateStore(':memory:');
 

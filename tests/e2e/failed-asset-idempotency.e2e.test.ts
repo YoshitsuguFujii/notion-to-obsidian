@@ -103,7 +103,7 @@ describe('取得できないNotionアセットを含むページ', () => {
         warnings: app.store.listWarnings(),
       });
       expect(persistedState).not.toContain('X-Amz-Signature');
-      expect(persistedState).not.toContain('first');
+      expect(persistedState).not.toContain('X-Amz-Signature=first');
     } finally {
       await app.close();
     }

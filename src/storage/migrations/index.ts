@@ -6,4 +6,7 @@ export interface Migration {
   sql: string;
 }
 
-export const migrations: readonly Migration[] = [initial, assetCacheStatus];
+export const migrations: readonly Migration[] = [
+  initial,
+  assetCacheStatus,
+].sort((a, b) => a.version - b.version);
