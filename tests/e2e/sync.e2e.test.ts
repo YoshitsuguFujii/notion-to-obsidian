@@ -1129,7 +1129,7 @@ describe('sync E2E', () => {
     const assetUrl = 'https://files.example/transaction.png';
     const blockId = 'abababab-abab-4bab-8bab-abababababab';
     let content = 'old-asset';
-    let failNextAssetUpsert = false;
+    let assetUpsertsBeforeFailure = Number.POSITIVE_INFINITY;
     const digest = (value: string) =>
       createHash('sha256').update(value).digest('hex');
     const page = (lastEditedTime: string) =>
@@ -1169,10 +1169,11 @@ describe('sync E2E', () => {
         listResources: () => store.listResources(),
         listUnfinishedRuns: () => store.listUnfinishedRuns(),
         upsertAsset: (asset) => {
-          if (failNextAssetUpsert) {
-            failNextAssetUpsert = false;
+          if (assetUpsertsBeforeFailure === 0) {
+            assetUpsertsBeforeFailure = Number.POSITIVE_INFINITY;
             throw new Error('injected asset upsert failure');
           }
+          assetUpsertsBeforeFailure -= 1;
           store.upsertAsset(asset);
         },
         getAsset: (value) => store.getAsset(value),
@@ -1191,10 +1192,11 @@ describe('sync E2E', () => {
     expect(app.store.getAsset(stableKey)?.contentHash).toBe(
       digest('old-asset'),
     );
+    expect(app.store.getAsset(stableKey)?.cacheStatus).toBe('usable');
 
     content = 'new-asset';
     app.setPages([page('2026-07-12T02:00:00.000Z')]);
-    failNextAssetUpsert = true;
+    assetUpsertsBeforeFailure = 1;
     await expect(app.sync()).rejects.toThrow('injected asset upsert failure');
 
     expect(await readFile(join(app.managedRoot, assetPath), 'utf8')).toBe(
@@ -1206,6 +1208,7 @@ describe('sync E2E', () => {
     expect(app.store.getAsset(stableKey)?.contentHash).toBe(
       digest('old-asset'),
     );
+    expect(app.store.getAsset(stableKey)?.cacheStatus).toBe('usable');
 
     const recovered = await app.sync();
     expect(recovered.actions).toContainEqual(
@@ -1220,6 +1223,7 @@ describe('sync E2E', () => {
     expect(app.store.getAsset(stableKey)?.contentHash).toBe(
       digest('new-asset'),
     );
+    expect(app.store.getAsset(stableKey)?.cacheStatus).toBe('usable');
   });
 
   it.each([
