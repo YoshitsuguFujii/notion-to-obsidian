@@ -78,6 +78,7 @@ export interface SyncHarness {
   store: SqliteStateStore;
   client: NotionClient;
   setPages(pages: MockPage[]): void;
+  setNow(value: string): void;
   failRoot(value: boolean): void;
   failSearch(value: boolean): void;
   sync(options?: SyncOptions): ReturnType<typeof runSyncOrchestrator>;
@@ -101,6 +102,7 @@ export async function createSyncHarness(
   let rootFailure = false;
   let searchFailure = false;
   let run = 0;
+  let now = '2026-07-12T01:00:00.000Z';
   const client: NotionClient = {
     retrievePage: vi.fn((pageId: string) => {
       if (rootFailure && pageId === ROOT_ID)
@@ -213,6 +215,9 @@ export async function createSyncHarness(
     setPages(nextPages) {
       pages = new Map(nextPages.map((page) => [page.id, page]));
     },
+    setNow(value) {
+      now = value;
+    },
     failRoot(value) {
       rootFailure = value;
     },
@@ -242,7 +247,7 @@ export async function createSyncHarness(
               etag: 'e2e-etag',
             };
           }),
-        now: () => '2026-07-12T01:00:00.000Z',
+        now: () => now,
         runId: () => `e2e-run-${++run}`,
         recover: (dryRun) =>
           reconcileCrash({ managedRoot, store, dryRun }).then(() => undefined),

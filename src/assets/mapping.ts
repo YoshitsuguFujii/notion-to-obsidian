@@ -27,6 +27,7 @@ export type AssetMatch =
   | {
       markdownIndex: number;
       status: 'ambiguous';
+      strategy: AssetMatchStrategy;
       reason: string;
     }
   | {
@@ -125,6 +126,7 @@ function uniqueCandidate(
     return {
       markdownIndex,
       status: 'ambiguous',
+      strategy,
       reason: `${strategy} matched multiple blocks`,
     };
   }

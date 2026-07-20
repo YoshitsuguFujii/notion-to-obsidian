@@ -141,6 +141,7 @@ interface PlannedContent {
   properties?: Readonly<Record<string, unknown>>;
   dataSourceIndex: boolean;
   assets: AssetState[];
+  assetStateUpdates: AssetState[];
   assetWarnings: WarningState[];
   plannedSidecars: PlannedUnsupportedSidecar[];
   assetPlan?: PlannedPageAssets;
@@ -195,6 +196,7 @@ function zeroCounts(): SyncRunCounts {
 
 function assetFingerprint(assets: readonly AssetState[]): string {
   return assets
+    .filter(({ cacheStatus }) => cacheStatus !== 'unverified')
     .map(({ stableKey, contentHash, etag, lastModified, size }) =>
       JSON.stringify({ stableKey, contentHash, etag, lastModified, size }),
     )
@@ -467,6 +469,7 @@ export async function runSyncOrchestrator(
           : await transformEnhancedMarkdown(retrieved.markdown);
         let body = sourceBody;
         let plannedAssets: AssetState[] = [];
+        const assetStateUpdates: AssetState[] = [];
         let assetWarnings: WarningState[] = [];
         let plannedAssetPlan: PlannedPageAssets | undefined;
         if (
@@ -602,6 +605,7 @@ export async function runSyncOrchestrator(
           ...(properties ? { properties } : {}),
           dataSourceIndex: Boolean(indexedRows),
           assets: plannedAssets,
+          assetStateUpdates,
           assetWarnings,
           plannedSidecars,
           ...(plannedAssetPlan ? { assetPlan: plannedAssetPlan } : {}),
@@ -864,6 +868,7 @@ export async function runSyncOrchestrator(
               idToPath,
             );
             item.assets = processed.assets;
+            item.assetStateUpdates = processed.assetStateUpdates;
             item.assetWarnings = processed.warnings;
             warningCount += processed.warnings.length;
           }
@@ -931,6 +936,9 @@ export async function runSyncOrchestrator(
               updatedAt: startedAt,
             });
             for (const asset of item.assets) {
+              dependencies.store.upsertAsset(asset);
+            }
+            for (const asset of item.assetStateUpdates) {
               dependencies.store.upsertAsset(asset);
             }
           });

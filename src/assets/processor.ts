@@ -64,6 +64,7 @@ interface ProcessAssetsDependencies {
 export interface PlannedAssetDownload {
   target: PlannedAssetTarget;
   remoteUrl: string;
+  remoteReferenceUrl: string;
   relativePath: string;
   allowedContentTypes: readonly string[];
   allowedExtensions: readonly string[];
@@ -76,9 +77,14 @@ export interface PlannedPageAssets {
   assets: AssetState[];
   warnings: WarningState[];
   downloads: PlannedAssetDownload[];
+  stableReferences: Array<{
+    remoteUrl: string;
+    remoteReferenceUrl: string;
+  }>;
   cachedAdoptions: Array<{
     stableKey: string;
     remoteUrl: string;
+    remoteReferenceUrl: string;
     relativePath: string;
   }>;
 }
@@ -86,6 +92,7 @@ export interface PlannedPageAssets {
 export interface AppliedPageAssets {
   markdown: string;
   assets: AssetState[];
+  assetStateUpdates: AssetState[];
   warnings: WarningState[];
 }
 
@@ -139,6 +146,21 @@ function markdownAssets(markdown: string): MarkdownAsset[] {
 
 function shortHash(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 16);
+}
+
+function remoteReferenceUrl(
+  remoteUrl: string,
+  source: 'notion' | 'external',
+): string {
+  if (source === 'external') return remoteUrl;
+  try {
+    const parsed = new URL(remoteUrl);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')
+      return remoteUrl;
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return remoteUrl;
+  }
 }
 
 function sanitizeDownloadFailure(error: unknown): string {
@@ -209,6 +231,7 @@ export async function planPageAssets(
   const assets: AssetState[] = [];
   const warnings: WarningState[] = [];
   const downloads: PlannedAssetDownload[] = [];
+  const stableReferences: PlannedPageAssets['stableReferences'] = [];
   const cachedAdoptions: PlannedPageAssets['cachedAdoptions'] = [];
 
   for (const [index, candidate] of markdown.entries()) {
@@ -221,6 +244,14 @@ export async function planPageAssets(
         message: match.reason,
         createdAt: input.now,
       });
+      if (match.strategy === 'url_path') {
+        const stableRemoteUrl = remoteReferenceUrl(candidate.url, 'notion');
+        replacements.set(candidate.url, stableRemoteUrl);
+        stableReferences.push({
+          remoteUrl: candidate.url,
+          remoteReferenceUrl: stableRemoteUrl,
+        });
+      }
       continue;
     }
     const matchedBlock =
@@ -257,11 +288,16 @@ export async function planPageAssets(
       posix.dirname(input.pagePath),
       localPath,
     );
-    const targetExists = previous ? await fileExists(absolutePath) : false;
-    const cached = previous !== undefined && !input.force && targetExists;
+    const mayUseCache =
+      previous !== undefined &&
+      previous.cacheStatus !== 'unverified' &&
+      !input.force;
+    const cached = mayUseCache && (await fileExists(absolutePath));
+    const stableRemoteUrl = remoteReferenceUrl(candidate.url, source);
     downloads.push({
       target,
       remoteUrl: candidate.url,
+      remoteReferenceUrl: stableRemoteUrl,
       relativePath,
       allowedContentTypes:
         source === 'notion'
@@ -273,13 +309,14 @@ export async function planPageAssets(
           : input.externalAssetAllowedExtensions,
       cached,
     });
+    replacements.set(candidate.url, cached ? relativePath : stableRemoteUrl);
     if (cached) {
       await assertAssetPathSafe(input.managedRoot, absolutePath);
-      replacements.set(candidate.url, relativePath);
       assets.push({ ...previous, lastSeenRunId: input.runId });
       cachedAdoptions.push({
         stableKey,
         remoteUrl: candidate.url,
+        remoteReferenceUrl: stableRemoteUrl,
         relativePath,
       });
     }
@@ -301,6 +338,7 @@ export async function planPageAssets(
     assets,
     warnings,
     downloads,
+    stableReferences,
     cachedAdoptions,
   };
 }
@@ -381,9 +419,10 @@ export async function applyPlannedPageAssets(
     'download' | 'fallbackFileSystem'
   >,
 ): Promise<AppliedPageAssets> {
-  const selectedStableKeys = new Set(
-    plan.downloads.map(({ target }) => target.stableKey),
+  const selectedDownloadsByStableKey = new Map(
+    plan.downloads.map((download) => [download.target.stableKey, download]),
   );
+  const selectedStableKeys = new Set(selectedDownloadsByStableKey.keys());
   const previousAssets = new Map(
     plan.assets.map((asset) => [asset.stableKey, asset]),
   );
@@ -469,37 +508,46 @@ export async function applyPlannedPageAssets(
       }),
     );
   }
-  const replacements = new Map<string, string>();
+  const replacements = new Map(
+    plan.stableReferences.map(({ remoteUrl, remoteReferenceUrl }) => [
+      remoteUrl,
+      remoteReferenceUrl,
+    ]),
+  );
   const mappings = [
     ...plan.cachedAdoptions,
-    ...plan.downloads.map(({ target, remoteUrl, relativePath }) => ({
-      stableKey: target.stableKey,
-      remoteUrl,
-      relativePath,
-    })),
+    ...plan.downloads.map(
+      ({ target, remoteUrl, remoteReferenceUrl, relativePath }) => ({
+        stableKey: target.stableKey,
+        remoteUrl,
+        remoteReferenceUrl,
+        relativePath,
+      }),
+    ),
   ];
   for (const mapping of mappings) {
     const outcome = outcomes.get(mapping.stableKey);
-    if (outcome && outcome.kind !== 'remote') {
-      replacements.set(mapping.remoteUrl, mapping.relativePath);
-    }
+    replacements.set(
+      mapping.remoteUrl,
+      outcome && outcome.kind !== 'remote'
+        ? mapping.relativePath
+        : mapping.remoteReferenceUrl,
+    );
   }
   for (const [stableKey, outcome] of outcomes) {
     if (!selectedStableKeys.has(stableKey) || outcome.kind === 'downloaded') {
       continue;
     }
-    const target = plan.downloads.find(
-      (download) => download.target.stableKey === stableKey,
-    )?.target;
+    const target = selectedDownloadsByStableKey.get(stableKey)?.target;
     if (!target) continue;
     const reason = [...new Set(failureReasons.get(stableKey) ?? [])].sort()[0];
     if (!reason) continue;
     const message =
       outcome.kind === 'verified'
-        ? 'Asset download failed; the existing cached file was verified and kept. The asset will be retried on a later sync.'
+        ? 'Asset download failed; the existing cached file was verified and kept. The asset will be retried when the page changes or during a --full sync.'
         : target.previous
-          ? 'Asset download failed; the cached file could not be verified, so the remote URL was kept. Check the asset warning and retry the sync.'
-          : 'Asset download failed; the remote URL was kept. Check the asset warning and retry the sync.';
+          ? 'Asset download failed; the cached file could not be verified, so the remote URL was kept. The asset will be retried when the page changes or during a --full sync.'
+          : 'Asset download failed; the remote URL was kept. The asset will be retried when the page changes or during a --full sync.';
     warnings.push({
       runId: input.runId,
       resourceId: target.pageId,
@@ -507,6 +555,22 @@ export async function applyPlannedPageAssets(
       message: `${message} Reason: ${reason}`,
       createdAt: input.now,
     });
+  }
+  const assetStateUpdates: AssetState[] = [];
+  for (const [stableKey, outcome] of outcomes) {
+    if (outcome.kind !== 'remote') {
+      assetStateUpdates.push({ ...outcome.asset, cacheStatus: 'usable' });
+      continue;
+    }
+    const previous =
+      selectedDownloadsByStableKey.get(stableKey)?.target.previous;
+    if (previous) {
+      assetStateUpdates.push({
+        ...previous,
+        cacheStatus: 'unverified',
+        lastSeenRunId: input.runId,
+      });
+    }
   }
   return {
     markdown: await rewriteAssetUrls(plan.sourceMarkdown, replacements),
@@ -516,6 +580,7 @@ export async function applyPlannedPageAssets(
           outcome.kind !== 'remote',
       )
       .map(({ asset }) => asset),
+    assetStateUpdates,
     warnings,
   };
 }
@@ -529,6 +594,7 @@ export async function processPageAssets(
     return {
       markdown: plan.markdown,
       assets: plan.assets,
+      assetStateUpdates: [],
       warnings: plan.warnings,
     };
   }

@@ -139,6 +139,7 @@ describe('matchMarkdownAssets', () => {
     ).toEqual({
       markdownIndex: 0,
       status: 'ambiguous',
+      strategy: 'url_path',
       reason: 'url_path matched multiple blocks',
     });
   });

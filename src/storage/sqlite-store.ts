@@ -10,7 +10,7 @@ import type {
   AssetState,
   WarningState,
 } from './state-store.js';
-import { sql, version } from './migrations/001-initial.js';
+import { migrations } from './migrations/index.js';
 
 export class SqliteStateStore implements StateStore, Disposable {
   private readonly database: Database.Database;
@@ -30,16 +30,18 @@ export class SqliteStateStore implements StateStore, Disposable {
     this.database.exec(
       'CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)',
     );
-    const applied = this.database
-      .prepare('SELECT 1 FROM schema_migrations WHERE version = ?')
-      .get(version);
-    if (!applied)
+    for (const migration of migrations) {
+      const applied = this.database
+        .prepare('SELECT 1 FROM schema_migrations WHERE version = ?')
+        .get(migration.version);
+      if (applied) continue;
       this.database.transaction(() => {
-        this.database.exec(sql);
+        this.database.exec(migration.sql);
         this.database
           .prepare('INSERT INTO schema_migrations(version) VALUES (?)')
-          .run(version);
+          .run(migration.version);
       })();
+    }
   }
   schemaVersion(): number {
     const row = this.database
@@ -300,15 +302,16 @@ export class SqliteStateStore implements StateStore, Disposable {
       .prepare(
         `INSERT INTO assets
           (stable_key, page_id, block_id, local_path, original_name, mime_type, size,
-           content_hash, etag, last_modified, last_seen_run_id, fetched_at)
+           content_hash, etag, last_modified, last_seen_run_id, fetched_at, cache_status)
          VALUES (@stableKey, @pageId, @blockId, @localPath, @originalName, @mimeType, @size,
-           @contentHash, @etag, @lastModified, @lastSeenRunId, @fetchedAt)
+           @contentHash, @etag, @lastModified, @lastSeenRunId, @fetchedAt, @cacheStatus)
          ON CONFLICT(stable_key) DO UPDATE SET
            local_path = excluded.local_path, original_name = excluded.original_name,
            mime_type = excluded.mime_type, size = excluded.size,
            content_hash = excluded.content_hash, etag = excluded.etag,
            last_modified = excluded.last_modified,
-           last_seen_run_id = excluded.last_seen_run_id, fetched_at = excluded.fetched_at`,
+           last_seen_run_id = excluded.last_seen_run_id, fetched_at = excluded.fetched_at,
+           cache_status = excluded.cache_status`,
       )
       .run({
         ...asset,
@@ -319,6 +322,7 @@ export class SqliteStateStore implements StateStore, Disposable {
         lastModified: asset.lastModified ?? null,
         lastSeenRunId: asset.lastSeenRunId ?? null,
         fetchedAt: asset.fetchedAt ?? null,
+        cacheStatus: asset.cacheStatus ?? 'usable',
       });
   }
   getAsset(stableKey: string): AssetState | undefined {
@@ -343,6 +347,7 @@ export class SqliteStateStore implements StateStore, Disposable {
         ? { lastSeenRunId: row.last_seen_run_id as string }
         : {}),
       ...(row.fetched_at ? { fetchedAt: row.fetched_at as string } : {}),
+      cacheStatus: row.cache_status as NonNullable<AssetState['cacheStatus']>,
     };
   }
   listAssets(): AssetState[] {

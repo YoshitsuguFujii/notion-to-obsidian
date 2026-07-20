@@ -191,13 +191,21 @@ Notionを復元できない緊急時は`.trash`から管理対象外の場所へ
 
 ### アセット
 
-Notionの画像・ファイルは`<managed>/_assets/<page-id>/`へ保存し、Markdownをローカル相対参照に書き換えます。Notion由来の添付は一般的なOffice文書、圧縮ファイル、動画、音声、テキスト形式を含む`notion_asset_allowed_content_types`と`notion_asset_allowed_extensions`で検査します。外部URLは既定でダウンロードせず、`download_external_assets: true`のときだけ、より限定的な`external_asset_allowed_content_types`と`external_asset_allowed_extensions`で検査して取得します。正規の形式を追加する場合は、対応するContent-Typeと拡張子を対象sourceの両許可リストへ追加してください。取得失敗、許可外形式、サイズ超過時は、署名query・認証情報・ローカル絶対パスをマスクした原因をwarningへ記録します。実際の取得に失敗した場合は、state DBの旧hashとsizeに一致する通常ファイルだけをlocal fallbackとして採用し、確認できなければMarkdownのリモートURLを維持します。通常のno-download cache経路はhashを再計算せず、正準パスの存在確認だけでlocal URLを維持します。同じremote URLが複数のNotionブロックに対応するなど対応付けが曖昧なアセットは、warningを記録して取得せずremote URLを維持します。取得計画に載った候補同士で同じremote URLが異なるlocal pathへ対応する場合だけ、安全性検証でPlanを停止します。
+Notionの画像・ファイルは`<managed>/_assets/<page-id>/`へ保存し、Markdownをローカル相対参照に書き換えます。Notion由来の添付は一般的なOffice文書、圧縮ファイル、動画、音声、テキスト形式を含む`notion_asset_allowed_content_types`と`notion_asset_allowed_extensions`で検査します。外部URLは既定でダウンロードせず、`download_external_assets: true`のときだけ、より限定的な`external_asset_allowed_content_types`と`external_asset_allowed_extensions`で検査して取得します。正規の形式を追加する場合は、対応するContent-Typeと拡張子を対象sourceの両許可リストへ追加してください。取得失敗、許可外形式、サイズ超過時は、署名query・認証情報・ローカル絶対パスをマスクした原因をwarningへ記録します。実際の取得に失敗した場合は、state DBの旧hashとsizeに一致する通常ファイルだけをlocal fallbackとして採用し、確認できなければMarkdownのリモートURLを維持します。通常のno-download cache経路はhashを再計算せず、正準パスの存在確認だけでlocal URLを維持します。同じremote URLが複数のNotionブロックに対応するなど対応付けが曖昧なアセットは、warningを記録して取得せずremote URLを維持します。
+
+Markdownへリモートを残す場合、Notion由来のURLは署名queryとfragmentを除いた形（origin+path）で保存します。Notionの添付URLは実行のたびに変わる署名付きの一時URLなので、完全なURLをそのまま残すと同じ内容でも本文が毎回変化し、取得に失敗し続けるページが毎回UPDATEになります。ダウンロード自体には完全な署名付きURLを使うため取得の成否は変わりません。**保存されたURLは署名を含まないため、そのままではブラウザで開けません**（署名付きURLも短時間で失効するため、いずれにせよ本文のURLは恒久的なリンクではありません）。外部URL（`download_external_assets: true`のとき）はユーザー由来で安定しているため、queryを含めて元のまま保存します。
+
+取得に失敗したアセットは、state DBに所有情報（旧hash・size・正準パス）を残したまま「未検証」として記録します。未検証のアセットは、ローカルにファイルが残っていても通常の同期ではlocal参照へ戻しません。**再取得はページが変更されたとき、または`sync --full`のときに行います**（毎回の同期で自動再試行はしません。取得できない状態が続いても外部サービスへ繰り返し要求しないためです）。再取得に成功すると通常のcachedへ戻り、本文もlocal参照へ戻ります。取得計画に載った候補同士で同じremote URLが異なるlocal pathへ対応する場合だけ、安全性検証でPlanを停止します。
 
 **既知の制約:** 拒否されたNotion添付の署名付きリモートURLは将来失効する可能性があります。必要な形式が拒否された場合は、Notion側の許可リストへContent-Typeと拡張子を追加して、URLが有効なうちにページを再同期してください。
 
 **既知の制約:** ローカルのアセットファイルが存在する場合、リモートの内容変更は検知しません。変更を反映したい場合は、対象の`_assets`内ファイルだけを削除し、`sync --page-id <page-id>`または通常のsyncを再実行してください。事前にVaultをバックアップし、削除後の`plan`で再取得対象を確認してください。
 
 **既知の制約:** アセットの所有確認とダウンロード失敗時のlocal fallbackは、`O_NOFOLLOW | O_NONBLOCK`で開いた同一file handleから内容を読み、読取前後のidentityと読取直後のpathを照合して競合窓を縮小します。adoptでは最終照合からstate DB保存まで、managed updateでは最終照合から`rename`までに差し替えの窓が残ります。同じsizeとmetadataへ復元された同一inodeの変更も検出できないため、完全なTOCTOU防止ではありません。従来は`O_NOFOLLOW`を利用できない環境でもアセット取得を試行しましたが、安全なfile openを保証できない環境を新たにsafety停止の対象とする意図的な互換差分があります。
+
+**互換上の注意（本文URL形式の変更）:** 従来はMarkdownへリモートを残す際にNotionの完全な署名付きURL（query・fragmentを含む）を保存していましたが、現在はqueryとfragmentを除いた形で保存します。この差分の影響を受けるのは、**取得に失敗したNotion由来のアセットを含み、かつ保存済み本文に署名queryまたはfragmentが残っているページ**だけです。該当ページは本変更後の初回同期で本文が一度だけ書き換わり（UPDATE）、以降は同じ入力なら変化しません。ローカルへ取り込み済みのアセット（本文がlocal相対参照のもの）、外部URL、Markdownの他の内容、ダウンロード時に使うURLはいずれも影響を受けません。なおorigin+path自体が変わる形でNotionがURLを回転させる場合と、ファイル名・位置による対応付けが曖昧なアセットについては、本文が変化し続ける可能性が残ります（下記の既知の制約）。
+
+**既知の制約:** 本文URLの安定化は、Notionの添付URLのうちqueryとfragmentだけが変わることを前提にしています。origin+path自体が変わる場合は本文が毎回変化し、取得に失敗し続けるページのUPDATEが残ります。また、URLのパスでブロックを特定できない曖昧なアセット（ファイル名や出現位置での対応付けが複数ブロックに一致するもの）は、外部URLと区別できないため安定化の対象外です。
 
 ### Data Source
 
