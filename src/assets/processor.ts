@@ -233,6 +233,7 @@ export async function planPageAssets(
   const downloads: PlannedAssetDownload[] = [];
   const stableReferences: PlannedPageAssets['stableReferences'] = [];
   const cachedAdoptions: PlannedPageAssets['cachedAdoptions'] = [];
+  const plannedDownloadKeys = new Set<string>();
 
   for (const [index, candidate] of markdown.entries()) {
     const match = matches[index];
@@ -284,6 +285,15 @@ export async function planPageAssets(
       previous,
     };
     assertAssetTargetIdentity(target);
+    // 同じURLが本文に複数回現れても取得先は1つなので、2件目以降は計画しない。
+    // replacementsはURLをキーに引くため、1件へまとめても全ての出現が書き換わる。
+    const downloadKey = JSON.stringify([
+      stableKey,
+      absolutePath,
+      candidate.url,
+    ]);
+    if (plannedDownloadKeys.has(downloadKey)) continue;
+    plannedDownloadKeys.add(downloadKey);
     const relativePath = posix.relative(
       posix.dirname(input.pagePath),
       localPath,
