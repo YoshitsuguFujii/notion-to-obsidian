@@ -360,6 +360,43 @@ describe('processPageAssets', () => {
     expect(result.assetStateUpdates).toEqual([]);
   });
 
+  it('同じ外部asset URLが本文に複数回現れても取得は1回だけで両方の参照がlocal URLになる', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const external = 'https://external.example/image.png';
+    const download = vi.fn(downloaded('image'));
+
+    const result = await processPageAssets(
+      {
+        pageId,
+        markdown: `![One](${external})\n\n![Two](${external})`,
+        pagePath: 'Page.md',
+        blocks: [],
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 100,
+        ...assetAllowlists,
+        downloadExternalAssets: true,
+        apply: true,
+      },
+      { getAsset: () => undefined, download },
+    );
+
+    expect(download).toHaveBeenCalledTimes(1);
+    const references = [
+      ...result.markdown.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g),
+    ].map(([, target]) => target);
+    expect(references).toHaveLength(2);
+    expect(references[1]).toBe(references[0]);
+    expect(references[0]).toMatch(
+      new RegExp(`^_assets/${pageId}/external-[^/]+--image\\.png$`),
+    );
+    expect(result.assetStateUpdates).toEqual([
+      expect.objectContaining({ pageId, cacheStatus: 'usable' }),
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
   it('未検証cacheが存在してもlocal URLを採用しない', async () => {
     const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
     const localPath = `_assets/${pageId}/${blockId}--photo.png`;
@@ -1359,6 +1396,8 @@ describe('processPageAssets', () => {
     ]);
     expect(failureFirst.markdown).toContain('../_assets/');
     expect(successFirst.markdown).toBe(failureFirst.markdown);
+    expect(failureFirst.warnings).toEqual([]);
+    expect(successFirst.warnings).toEqual([]);
   });
 
   it('取得対象とno-download cacheが同じページにある場合はそれぞれのlocal URLとstateを採用する', async () => {
