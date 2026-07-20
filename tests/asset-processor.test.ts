@@ -1451,50 +1451,56 @@ describe('processPageAssets', () => {
     expect(download.mock.calls[0]?.[0].url.href).toBe(fetchedUrl);
   });
 
-  it('queryだけ異なるURLが複数ブロックに対応する場合は警告を記録し安定参照を残す', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
-    const anotherBlockId = '33333333-3333-4333-8333-333333333333';
-    const anotherUrl = 'https://files.example/photo.png?signature=other';
-    const collidingBlocks: BlockNode[] = [
-      ...blocks,
-      {
-        block: {
-          id: anotherBlockId,
-          type: 'image',
-          image: { type: 'file', file: { url: anotherUrl }, caption: [] },
+  it.each([
+    { phase: '同期計画', apply: false },
+    { phase: '同期適用', apply: true },
+  ])(
+    '$phaseでqueryだけ異なるURLが複数ブロックに対応する場合は警告を記録し安定参照を残す',
+    async ({ apply }) => {
+      const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+      const anotherBlockId = '33333333-3333-4333-8333-333333333333';
+      const anotherUrl = 'https://files.example/photo.png?signature=other';
+      const collidingBlocks: BlockNode[] = [
+        ...blocks,
+        {
+          block: {
+            id: anotherBlockId,
+            type: 'image',
+            image: { type: 'file', file: { url: anotherUrl }, caption: [] },
+          },
+          children: [],
         },
-        children: [],
-      },
-    ];
+      ];
 
-    const download = vi.fn(downloaded('image'));
-    const result = await processPageAssets(
-      {
-        pageId,
-        markdown: `![First](${url})\n\n![Second](${anotherUrl})`,
-        pagePath: 'Notes/Page.md',
-        blocks: collidingBlocks,
-        managedRoot: root,
-        runId: 'run',
-        now: '2026-07-12T00:00:00.000Z',
-        maximumBytes: 100,
-        ...assetAllowlists,
-        downloadExternalAssets: false,
-        apply: false,
-      },
-      { getAsset: () => undefined, download },
-    );
+      const download = vi.fn(downloaded('image'));
+      const result = await processPageAssets(
+        {
+          pageId,
+          markdown: `![First](${url})\n\n![Second](${anotherUrl})`,
+          pagePath: 'Notes/Page.md',
+          blocks: collidingBlocks,
+          managedRoot: root,
+          runId: 'run',
+          now: '2026-07-12T00:00:00.000Z',
+          maximumBytes: 100,
+          ...assetAllowlists,
+          downloadExternalAssets: false,
+          apply,
+        },
+        { getAsset: () => undefined, download },
+      );
 
-    expect(result.markdown).toContain(
-      '![First](https://files.example/photo.png)',
-    );
-    expect(result.markdown).toContain(
-      '![Second](https://files.example/photo.png)',
-    );
-    expect(result.warnings).toContainEqual(
-      expect.objectContaining({ warningType: 'asset_mapping_ambiguous' }),
-    );
-    expect(download).not.toHaveBeenCalled();
-    await expect(access(join(root, '_assets'))).rejects.toThrow();
-  });
+      expect(result.markdown).toContain(
+        '![First](https://files.example/photo.png)',
+      );
+      expect(result.markdown).toContain(
+        '![Second](https://files.example/photo.png)',
+      );
+      expect(result.warnings).toContainEqual(
+        expect.objectContaining({ warningType: 'asset_mapping_ambiguous' }),
+      );
+      expect(download).not.toHaveBeenCalled();
+      await expect(access(join(root, '_assets'))).rejects.toThrow();
+    },
+  );
 });

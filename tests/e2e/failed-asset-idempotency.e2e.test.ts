@@ -109,6 +109,41 @@ describe('取得できないNotionアセットを含むページ', () => {
     }
   });
 
+  it('同じpathへ曖昧に対応するURLの署名queryが変わっても2回目は変更しない', async () => {
+    const app = await createSyncHarness([
+      pageWithTwoAssets(
+        'https://files.example/shared.png?signature=first-a',
+        'https://files.example/shared.png?signature=first-b',
+      ),
+    ]);
+    try {
+      await app.sync();
+      const target = join(app.managedRoot, 'Notes.md');
+      const fixedTime = new Date('2020-01-02T03:04:05.000Z');
+      await utimes(target, fixedTime, fixedTime);
+      const firstContent = await readFile(target, 'utf8');
+
+      app.setNow('2026-07-20T02:00:00.000Z');
+      app.setPages([
+        pageWithTwoAssets(
+          'https://files.example/shared.png?signature=second-a',
+          'https://files.example/shared.png?signature=second-b',
+        ),
+      ]);
+      const second = await app.sync();
+
+      expect(second.actions).toContainEqual(
+        expect.objectContaining({ type: 'UNCHANGED', notionId: ROOT_ID }),
+      );
+      expect(await readFile(target, 'utf8')).toBe(firstContent);
+      expect((await stat(target)).mtimeMs).toBe(fixedTime.getTime());
+      expect(firstContent).toContain('https://files.example/shared.png');
+      expect(firstContent).not.toContain('signature=');
+    } finally {
+      await app.close();
+    }
+  });
+
   it('未検証cacheは通常同期で再採用せずfull成功後にlocal参照へ復帰する', async () => {
     const url = 'https://files.example/photo.png?signature=first';
     let failDownload = false;

@@ -77,6 +77,10 @@ export interface PlannedPageAssets {
   assets: AssetState[];
   warnings: WarningState[];
   downloads: PlannedAssetDownload[];
+  stableReferences: Array<{
+    remoteUrl: string;
+    remoteReferenceUrl: string;
+  }>;
   cachedAdoptions: Array<{
     stableKey: string;
     remoteUrl: string;
@@ -227,6 +231,7 @@ export async function planPageAssets(
   const assets: AssetState[] = [];
   const warnings: WarningState[] = [];
   const downloads: PlannedAssetDownload[] = [];
+  const stableReferences: PlannedPageAssets['stableReferences'] = [];
   const cachedAdoptions: PlannedPageAssets['cachedAdoptions'] = [];
 
   for (const [index, candidate] of markdown.entries()) {
@@ -240,10 +245,12 @@ export async function planPageAssets(
         createdAt: input.now,
       });
       if (match.strategy === 'url_path') {
-        replacements.set(
-          candidate.url,
-          remoteReferenceUrl(candidate.url, 'notion'),
-        );
+        const stableRemoteUrl = remoteReferenceUrl(candidate.url, 'notion');
+        replacements.set(candidate.url, stableRemoteUrl);
+        stableReferences.push({
+          remoteUrl: candidate.url,
+          remoteReferenceUrl: stableRemoteUrl,
+        });
       }
       continue;
     }
@@ -331,6 +338,7 @@ export async function planPageAssets(
     assets,
     warnings,
     downloads,
+    stableReferences,
     cachedAdoptions,
   };
 }
@@ -500,7 +508,12 @@ export async function applyPlannedPageAssets(
       }),
     );
   }
-  const replacements = new Map<string, string>();
+  const replacements = new Map(
+    plan.stableReferences.map(({ remoteUrl, remoteReferenceUrl }) => [
+      remoteUrl,
+      remoteReferenceUrl,
+    ]),
+  );
   const mappings = [
     ...plan.cachedAdoptions,
     ...plan.downloads.map(
