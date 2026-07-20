@@ -302,15 +302,16 @@ export class SqliteStateStore implements StateStore, Disposable {
       .prepare(
         `INSERT INTO assets
           (stable_key, page_id, block_id, local_path, original_name, mime_type, size,
-           content_hash, etag, last_modified, last_seen_run_id, fetched_at)
+           content_hash, etag, last_modified, last_seen_run_id, fetched_at, cache_status)
          VALUES (@stableKey, @pageId, @blockId, @localPath, @originalName, @mimeType, @size,
-           @contentHash, @etag, @lastModified, @lastSeenRunId, @fetchedAt)
+           @contentHash, @etag, @lastModified, @lastSeenRunId, @fetchedAt, @cacheStatus)
          ON CONFLICT(stable_key) DO UPDATE SET
            local_path = excluded.local_path, original_name = excluded.original_name,
            mime_type = excluded.mime_type, size = excluded.size,
            content_hash = excluded.content_hash, etag = excluded.etag,
            last_modified = excluded.last_modified,
-           last_seen_run_id = excluded.last_seen_run_id, fetched_at = excluded.fetched_at`,
+           last_seen_run_id = excluded.last_seen_run_id, fetched_at = excluded.fetched_at,
+           cache_status = excluded.cache_status`,
       )
       .run({
         ...asset,
@@ -321,6 +322,7 @@ export class SqliteStateStore implements StateStore, Disposable {
         lastModified: asset.lastModified ?? null,
         lastSeenRunId: asset.lastSeenRunId ?? null,
         fetchedAt: asset.fetchedAt ?? null,
+        cacheStatus: asset.cacheStatus ?? 'usable',
       });
   }
   getAsset(stableKey: string): AssetState | undefined {
@@ -345,6 +347,7 @@ export class SqliteStateStore implements StateStore, Disposable {
         ? { lastSeenRunId: row.last_seen_run_id as string }
         : {}),
       ...(row.fetched_at ? { fetchedAt: row.fetched_at as string } : {}),
+      cacheStatus: row.cache_status as NonNullable<AssetState['cacheStatus']>,
     };
   }
   listAssets(): AssetState[] {

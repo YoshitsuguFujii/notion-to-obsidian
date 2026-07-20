@@ -42,6 +42,7 @@ export interface AssetState {
   lastModified?: string;
   lastSeenRunId?: string;
   fetchedAt?: string;
+  cacheStatus?: 'usable' | 'unverified';
 }
 export interface WarningState {
   runId: string;
