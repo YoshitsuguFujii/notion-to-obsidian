@@ -146,12 +146,26 @@ export function matchMarkdownAssets(
   blockAssets: readonly BlockAsset[],
 ): AssetMatch[] {
   const consumed = new Set<string>();
+  // 同じURL文字列を本文で複数回参照した場合に、最初に対応させたblockを再利用する。
+  // 本文とblockのURLは別API由来で署名queryが回転するため、blockとの完全一致ではなく
+  // 「本文どうしのURL一致」を同一アセットの根拠にする。url_path対応のみ記録し、
+  // 同名別画像を取り違えうるfilename/position_caption戦略では再利用しない。
+  const blockByUrl = new Map<string, string>();
   return markdownAssets.map((asset, markdownIndex) => {
     const available = blockAssets.filter(
       (candidate) => !consumed.has(candidate.blockId),
     );
     const path = normalizedUrlPath(asset.url);
     if (path) {
+      const reused = blockByUrl.get(asset.url);
+      if (reused !== undefined) {
+        return {
+          markdownIndex,
+          status: 'matched',
+          blockId: reused,
+          strategy: 'url_path',
+        };
+      }
       const match = uniqueCandidate(
         available.filter(
           (candidate) => normalizedUrlPath(candidate.url) === path,
@@ -160,7 +174,10 @@ export function matchMarkdownAssets(
         'url_path',
       );
       if (match) {
-        if (match.status === 'matched') consumed.add(match.blockId);
+        if (match.status === 'matched') {
+          consumed.add(match.blockId);
+          blockByUrl.set(asset.url, match.blockId);
+        }
         return match;
       }
     }

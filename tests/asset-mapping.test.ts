@@ -156,4 +156,64 @@ describe('matchMarkdownAssets', () => {
       strategy: 'position_caption',
     });
   });
+
+  it('同一URLが本文に2回現れたら2件とも同じblockへurl_pathで対応する', () => {
+    const sameUrl = 'https://files.example/path/photo.png?signature=same';
+    expect(
+      matchMarkdownAssets(
+        [
+          markdownAsset(sameUrl, { occurrence: 0 }),
+          markdownAsset(sameUrl, { occurrence: 1 }),
+        ],
+        blocks,
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        status: 'matched',
+        blockId: 'block-a',
+        strategy: 'url_path',
+      }),
+      expect.objectContaining({
+        status: 'matched',
+        blockId: 'block-a',
+        strategy: 'url_path',
+      }),
+    ]);
+  });
+
+  it('URL pathが同じでもURLが完全一致しない外部参照は対応済みblockを再利用しない', () => {
+    const external = 'https://cdn.example/path/photo.png?variant=small';
+    expect(
+      matchMarkdownAssets(
+        [
+          markdownAsset('https://files.example/path/photo.png?signature=old', {
+            occurrence: 0,
+          }),
+          markdownAsset(external, {
+            occurrence: 1,
+            filename: undefined,
+            caption: 'External',
+          }),
+        ],
+        blocks,
+      )[1],
+    ).toMatchObject({ status: 'unmatched' });
+  });
+
+  it('filenameで対応したblockは後続の同名参照に再利用されない', () => {
+    const filenameOnlyBlocks = [{ ...blocks[0]!, url: undefined }];
+    expect(
+      matchMarkdownAssets(
+        [
+          markdownAsset('https://cdn.example/first/photo.png', {
+            occurrence: 0,
+          }),
+          markdownAsset('https://cdn.example/second/photo.png', {
+            occurrence: 1,
+          }),
+        ],
+        filenameOnlyBlocks,
+      )[1],
+    ).toMatchObject({ status: 'unmatched' });
+  });
 });

@@ -397,6 +397,76 @@ describe('processPageAssets', () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it('同じNotionブロックのURLが本文に2回現れても外部取得有効時に停止せず取得は1回になる', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const download = vi.fn(downloaded('image'));
+
+    const result = await processPageAssets(
+      {
+        pageId,
+        markdown: `![One](${url})\n\n![Two](${url})`,
+        pagePath: 'Page.md',
+        blocks,
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 100,
+        ...assetAllowlists,
+        downloadExternalAssets: true,
+        apply: true,
+      },
+      { getAsset: () => undefined, download },
+    );
+
+    expect(download).toHaveBeenCalledTimes(1);
+    const references = [
+      ...result.markdown.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g),
+    ].map(([, target]) => target);
+    expect(references).toEqual([
+      `_assets/${pageId}/${blockId}--photo.png`,
+      `_assets/${pageId}/${blockId}--photo.png`,
+    ]);
+    expect(result.assetStateUpdates).toEqual([
+      expect.objectContaining({
+        stableKey: `${pageId}:${blockId}`,
+        cacheStatus: 'usable',
+      }),
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('同じNotionブロックのURLが2回現れる場合は外部取得が無効でも両参照がlocal URLになる', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
+    const download = vi.fn(downloaded('image'));
+
+    const result = await processPageAssets(
+      {
+        pageId,
+        markdown: `![One](${url})\n\n![Two](${url})`,
+        pagePath: 'Page.md',
+        blocks,
+        managedRoot: root,
+        runId: 'run',
+        now: '2026-07-12T00:00:00.000Z',
+        maximumBytes: 100,
+        ...assetAllowlists,
+        downloadExternalAssets: false,
+        apply: true,
+      },
+      { getAsset: () => undefined, download },
+    );
+
+    expect(download).toHaveBeenCalledTimes(1);
+    const references = [
+      ...result.markdown.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g),
+    ].map(([, target]) => target);
+    expect(references).toEqual([
+      `_assets/${pageId}/${blockId}--photo.png`,
+      `_assets/${pageId}/${blockId}--photo.png`,
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
   it('未検証cacheが存在してもlocal URLを採用しない', async () => {
     const root = await mkdtemp(join(tmpdir(), 'notion-asset-process-'));
     const localPath = `_assets/${pageId}/${blockId}--photo.png`;
