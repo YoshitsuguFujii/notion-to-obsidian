@@ -93,6 +93,7 @@ export interface AppliedPageAssets {
   markdown: string;
   assets: AssetState[];
   assetStateUpdates: AssetState[];
+  /** Apply 中に新たに発生した警告のみ。全警告を扱う呼び出し側は Plan の警告と連結する。 */
   warnings: WarningState[];
 }
 
@@ -443,7 +444,7 @@ export async function applyPlannedPageAssets(
     const asset = previousAssets.get(adoption.stableKey);
     if (asset) outcomes.set(adoption.stableKey, { kind: 'verified', asset });
   }
-  const warnings = [...plan.warnings];
+  const warnings: WarningState[] = [];
   for (const download of plan.downloads) {
     const { target } = download;
     assertAssetTargetIdentity(target);
@@ -608,9 +609,13 @@ export async function processPageAssets(
       warnings: plan.warnings,
     };
   }
-  return applyPlannedPageAssets(
+  const applied = await applyPlannedPageAssets(
     input,
     { ...plan, downloads: plan.downloads.filter(({ cached }) => !cached) },
     dependencies,
   );
+  return {
+    ...applied,
+    warnings: [...plan.warnings, ...applied.warnings],
+  };
 }
