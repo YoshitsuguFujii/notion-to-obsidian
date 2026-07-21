@@ -935,10 +935,18 @@ export async function runSyncOrchestrator(
               createdAt: item.stored?.createdAt ?? startedAt,
               updatedAt: startedAt,
             });
+            // Plan 由来の asset（cached adoption）と Apply で確定した最終状態を
+            // stable key ごとに1件へまとめて upsert する。同じ key を2回書かない。
+            // Apply の確定状態（assetStateUpdates）を後に set して Plan 時点の状態
+            // より優先する。並べ替えるとこの優先関係が壊れるため順序を保つこと。
+            const assetsByStableKey = new Map<string, AssetState>();
             for (const asset of item.assets) {
-              dependencies.store.upsertAsset(asset);
+              assetsByStableKey.set(asset.stableKey, asset);
             }
             for (const asset of item.assetStateUpdates) {
+              assetsByStableKey.set(asset.stableKey, asset);
+            }
+            for (const asset of assetsByStableKey.values()) {
               dependencies.store.upsertAsset(asset);
             }
           });
