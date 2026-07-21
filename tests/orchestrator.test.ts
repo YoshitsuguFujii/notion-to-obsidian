@@ -239,6 +239,99 @@ describe('runSyncOrchestrator', () => {
     expect(context.store.listWarnings()).toEqual(warningsBefore);
   });
 
+  it('Plan警告を1件表示しPlanとApplyのアセット警告を各1件保存する', async () => {
+    const context = await fixture();
+    const failedUrl =
+      'https://files.example/download-failed.png?signature=markdown';
+    const dependencies = {
+      ...ambiguousAssetDependencies(context),
+      retrieveContent: () =>
+        Promise.resolve({
+          markdown: [
+            `![Shared](${ambiguousAssetUrl})`,
+            `![Failed](${failedUrl})`,
+          ].join('\n\n'),
+          warnings: [],
+          sidecars: [],
+        }),
+      retrieveBlocks: () =>
+        Promise.resolve([
+          ...ambiguousAssetBlocks(),
+          {
+            block: {
+              id: '44444444-4444-4444-8444-444444444444',
+              type: 'image' as const,
+              image: {
+                type: 'file' as const,
+                file: {
+                  url: 'https://files.example/download-failed.png?signature=block',
+                },
+                caption: [],
+              },
+            },
+            children: [],
+          },
+        ]),
+      downloadAsset: () => Promise.reject(new Error('network unavailable')),
+    };
+
+    const result = await runSyncOrchestrator(
+      context.config,
+      { strict: true },
+      dependencies,
+    );
+
+    expect(
+      result.actions.filter(({ type }) => type === 'WARNING'),
+    ).toHaveLength(1);
+    const storedWarnings = context.store.listWarnings(result.runId);
+    expect(storedWarnings).toHaveLength(2);
+    expect(storedWarnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ warningType: 'asset_mapping_ambiguous' }),
+        expect.objectContaining({ warningType: 'asset_download_failed' }),
+      ]),
+    );
+    expect(result.partialFailure).toBe(true);
+  });
+
+  it('Markdown取得時の警告をページがUNCHANGEDでも同期runに記録する', async () => {
+    const context = await fixture();
+    let run = 0;
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: () => Promise.resolve(context.census),
+      retrieveContent: () =>
+        Promise.resolve({
+          markdown: '# Body\n',
+          warnings: [
+            {
+              type: 'markdown_truncated',
+              message: 'Markdown content was truncated.',
+            },
+          ],
+          sidecars: [],
+        }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-markdown-warning-${++run}`,
+    };
+    await runSyncOrchestrator(context.config, {}, dependencies);
+
+    const second = await runSyncOrchestrator(context.config, {}, dependencies);
+
+    expect(second.actions).toContainEqual(
+      expect.objectContaining({ type: 'UNCHANGED', notionId: rootId }),
+    );
+    expect(context.store.listWarnings(second.runId)).toEqual([
+      expect.objectContaining({
+        resourceId: rootId,
+        warningType: 'markdown_truncated',
+        message: 'Markdown content was truncated.',
+      }),
+    ]);
+  });
+
   it('初回CREATE後、同じ入力の2回目をUNCHANGEDとしてmtimeを維持する', async () => {
     const { store, config, census, lock } = await fixture();
     const dependencies = {
