@@ -1196,7 +1196,7 @@ describe('sync E2E', () => {
 
     content = 'new-asset';
     app.setPages([page('2026-07-12T02:00:00.000Z')]);
-    assetUpsertsBeforeFailure = 1;
+    assetUpsertsBeforeFailure = 0;
     await expect(app.sync()).rejects.toThrow('injected asset upsert failure');
 
     expect(await readFile(join(app.managedRoot, assetPath), 'utf8')).toBe(
@@ -1224,6 +1224,75 @@ describe('sync E2E', () => {
       digest('new-asset'),
     );
     expect(app.store.getAsset(stableKey)?.cacheStatus).toBe('usable');
+  });
+
+  it('取得したアセットを同一transaction内で二重にupsertしない', async () => {
+    const assetUrl = 'https://files.example/single.png';
+    const blockId = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
+    const digest = (value: string) =>
+      createHash('sha256').update(value).digest('hex');
+    const upsertedKeys = new Set<string>();
+    const app = await harness(
+      [
+        rootPage({
+          markdown: `![Single](${assetUrl})`,
+          blocks: [
+            {
+              id: blockId,
+              type: 'image',
+              image: { type: 'file', file: { url: assetUrl }, caption: [] },
+            },
+          ],
+        }),
+      ],
+      {
+        downloadAsset: async ({ destination }) => {
+          await mkdir(dirname(destination), { recursive: true });
+          await writeFile(destination, 'asset');
+          return {
+            size: Buffer.byteLength('asset'),
+            contentHash: digest('asset'),
+            contentType: 'image/png',
+          };
+        },
+        storeWrapper: (store): StateStore => ({
+          beginRun: (value) => store.beginRun(value),
+          getRun: (value) => store.getRun(value),
+          finishRun: (value) => store.finishRun(value),
+          getLatestRun: () => store.getLatestRun(),
+          upsertRoot: (value) => store.upsertRoot(value),
+          getRoot: (value) => store.getRoot(value),
+          listRoots: () => store.listRoots(),
+          upsertResource: (value) => store.upsertResource(value),
+          updateResourceMissingState: (id, value) =>
+            store.updateResourceMissingState(id, value),
+          getResource: (value) => store.getResource(value),
+          listResources: () => store.listResources(),
+          listUnfinishedRuns: () => store.listUnfinishedRuns(),
+          upsertAsset: (asset) => {
+            if (upsertedKeys.has(asset.stableKey)) {
+              throw new Error(
+                `asset ${asset.stableKey} upserted more than once`,
+              );
+            }
+            upsertedKeys.add(asset.stableKey);
+            store.upsertAsset(asset);
+          },
+          getAsset: (value) => store.getAsset(value),
+          listAssets: () => store.listAssets(),
+          insertWarning: (value) => store.insertWarning(value),
+          listWarnings: (value) => store.listWarnings(value),
+          transaction: (work) => store.transaction(work),
+          close: () => store.close(),
+        }),
+      },
+    );
+
+    await app.sync();
+
+    expect(app.store.getAsset(`${ROOT_ID}:${blockId}`)?.cacheStatus).toBe(
+      'usable',
+    );
   });
 
   it.each([
