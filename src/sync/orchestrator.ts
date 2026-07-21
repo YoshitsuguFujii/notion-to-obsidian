@@ -869,7 +869,7 @@ export async function runSyncOrchestrator(
             );
             item.assets = processed.assets;
             item.assetStateUpdates = processed.assetStateUpdates;
-            item.assetWarnings = processed.warnings;
+            item.assetWarnings = [...item.assetWarnings, ...processed.warnings];
             warningCount += processed.warnings.length;
           }
           item.contentHash = hash(item.body);

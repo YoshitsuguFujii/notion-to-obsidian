@@ -443,7 +443,7 @@ export async function applyPlannedPageAssets(
     const asset = previousAssets.get(adoption.stableKey);
     if (asset) outcomes.set(adoption.stableKey, { kind: 'verified', asset });
   }
-  const warnings = [...plan.warnings];
+  const warnings: WarningState[] = [];
   for (const download of plan.downloads) {
     const { target } = download;
     assertAssetTargetIdentity(target);
@@ -608,9 +608,13 @@ export async function processPageAssets(
       warnings: plan.warnings,
     };
   }
-  return applyPlannedPageAssets(
+  const applied = await applyPlannedPageAssets(
     input,
     { ...plan, downloads: plan.downloads.filter(({ cached }) => !cached) },
     dependencies,
   );
+  return {
+    ...applied,
+    warnings: [...plan.warnings, ...applied.warnings],
+  };
 }
