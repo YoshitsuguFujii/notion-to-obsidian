@@ -1295,6 +1295,56 @@ describe('sync E2E', () => {
     );
   });
 
+  it('アセットを持つ子ページのMOVEでは再取得せずにasset stateを維持する', async () => {
+    const assetUrl = 'https://files.example/kept.png';
+    const blockId = 'efefefef-efef-4fef-8fef-efefefefefef';
+    const digest = (value: string) =>
+      createHash('sha256').update(value).digest('hex');
+    let downloadCount = 0;
+    const childWithAsset = (title: string) =>
+      childPage({
+        title,
+        markdown: `![Kept](${assetUrl})`,
+        blocks: [
+          {
+            id: blockId,
+            type: 'image',
+            image: { type: 'file', file: { url: assetUrl }, caption: [] },
+          },
+        ],
+      });
+    const app = await harness([rootPage(), childWithAsset('Child')], {
+      downloadAsset: async ({ destination }) => {
+        downloadCount += 1;
+        await mkdir(dirname(destination), { recursive: true });
+        await writeFile(destination, 'kept');
+        return {
+          size: Buffer.byteLength('kept'),
+          contentHash: digest('kept'),
+          contentType: 'image/png',
+        };
+      },
+    });
+
+    await app.sync();
+    const stableKey = `${CHILD_ID}:${blockId}`;
+    const before = app.store.getAsset(stableKey);
+    expect(before?.cacheStatus).toBe('usable');
+    expect(downloadCount).toBe(1);
+
+    app.setPages([rootPage(), childWithAsset('Renamed')]);
+    const result = await app.sync();
+
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'MOVE', notionId: CHILD_ID }),
+    );
+    const after = app.store.getAsset(stableKey);
+    expect(after?.localPath).toBe(before?.localPath);
+    expect(after?.cacheStatus).toBe('usable');
+    expect(after?.lastSeenRunId).not.toBe(before?.lastSeenRunId);
+    expect(downloadCount).toBe(1);
+  });
+
   it.each([
     {
       extension: '.docx',
