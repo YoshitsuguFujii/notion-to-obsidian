@@ -93,6 +93,7 @@ export interface AppliedPageAssets {
   markdown: string;
   assets: AssetState[];
   assetStateUpdates: AssetState[];
+  /** Apply 中に新たに発生した警告のみ。全警告を扱う呼び出し側は Plan の警告と連結する。 */
   warnings: WarningState[];
 }
 

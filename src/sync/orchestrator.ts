@@ -876,6 +876,7 @@ export async function runSyncOrchestrator(
             );
             item.assets = processed.assets;
             item.assetStateUpdates = processed.assetStateUpdates;
+            // Apply の戻り値は Apply 中の警告だけなので、Plan で保持した警告へ追加する。
             item.assetWarnings = [...item.assetWarnings, ...processed.warnings];
             warningCount += processed.warnings.length;
           }
