@@ -586,7 +586,7 @@ export async function runSyncOrchestrator(
             (message) => ({ type: 'move_collision', message }),
           ),
         ];
-        warningCount += warnings.length;
+        warningCount += warnings.length + assetWarnings.length;
         const plannedSidecars = planUnsupportedSidecars({
           managedRoot: config.obsidian.managedPath,
           pageId: resource.notionId,
@@ -616,6 +616,13 @@ export async function runSyncOrchestrator(
           notionId: resource.notionId,
           path: path.expectedPath,
         });
+        for (const warning of assetWarnings) {
+          actions.push({
+            type: 'WARNING',
+            notionId: resource.notionId,
+            message: warning.message,
+          });
+        }
         if (dryRun) {
           const assetPlan = selectedAssetPlan(plannedItem);
           for (const download of assetPlan?.downloads ?? []) {
@@ -950,18 +957,18 @@ export async function runSyncOrchestrator(
               dependencies.store.upsertAsset(asset);
             }
           });
-          for (const warning of [
-            ...item.warnings.map((value) => ({
-              runId,
-              resourceId: item.resource.notionId,
-              warningType: value.type,
-              message: value.message,
-              createdAt: startedAt,
-            })),
-            ...item.assetWarnings,
-          ]) {
-            dependencies.store.insertWarning(warning);
-          }
+        }
+        for (const warning of [
+          ...item.warnings.map((value) => ({
+            runId,
+            resourceId: item.resource.notionId,
+            warningType: value.type,
+            message: value.message,
+            createdAt: startedAt,
+          })),
+          ...item.assetWarnings,
+        ]) {
+          dependencies.store.insertWarning(warning);
         }
         counts[type.toLowerCase() as keyof SyncRunCounts] += 1;
         dependencies.logger?.debug('sync action', {
