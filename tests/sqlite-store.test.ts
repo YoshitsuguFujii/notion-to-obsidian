@@ -79,11 +79,10 @@ async function versionOneDatabase(): Promise<{
 }
 
 describe('SqliteStateStore', () => {
-  it('migrationをversionの昇順かつ重複なしで登録する', () => {
+  it('migrationを1から始まる連番のversionで登録する', () => {
     const versions = migrations.map(({ version }) => version);
 
-    expect(versions).toEqual([...versions].sort((a, b) => a - b));
-    expect(new Set(versions).size).toBe(versions.length);
+    expect(versions).toEqual(versions.map((_, index) => index + 1));
   });
 
   it('全状態テーブルと最新migrationを作成する', () => {

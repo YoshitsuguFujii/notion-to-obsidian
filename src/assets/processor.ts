@@ -148,7 +148,7 @@ function shortHash(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 16);
 }
 
-function remoteReferenceUrl(
+function stableReferenceUrl(
   remoteUrl: string,
   source: 'notion' | 'external',
 ): string {
@@ -246,7 +246,7 @@ export async function planPageAssets(
         createdAt: input.now,
       });
       if (match.strategy === 'url_path') {
-        const stableRemoteUrl = remoteReferenceUrl(candidate.url, 'notion');
+        const stableRemoteUrl = stableReferenceUrl(candidate.url, 'notion');
         replacements.set(candidate.url, stableRemoteUrl);
         stableReferences.push({
           remoteUrl: candidate.url,
@@ -303,7 +303,7 @@ export async function planPageAssets(
       previous.cacheStatus !== 'unverified' &&
       !input.force;
     const cached = mayUseCache && (await fileExists(absolutePath));
-    const stableRemoteUrl = remoteReferenceUrl(candidate.url, source);
+    const stableRemoteUrl = stableReferenceUrl(candidate.url, source);
     downloads.push({
       target,
       remoteUrl: candidate.url,
