@@ -32,9 +32,9 @@ describe('inspectManagementMarker', () => {
     ['16進以外', 'g1111111-1111-8111-9111-111111111111'],
     ['ダッシュ位置違い', '1111111-11111-8111-9111-111111111111'],
     ['空文字', ''],
-    ['compact 32桁', '11111111111181119111111111111111'],
+    ['compact 32桁', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
   ])('%sのIDは管理対象として受理しない', (_label, id) => {
-    expect(managed(id, notionId)).toBe(false);
+    expect(managed(id)).toBe(false);
   });
 
   it('managed_byが異なるファイルは管理対象外にする', () => {
