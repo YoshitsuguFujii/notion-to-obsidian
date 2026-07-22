@@ -41,14 +41,15 @@ import type { UnsupportedSidecar } from '../transform/unsupported.js';
 import type { createLogger } from '../logging/index.js';
 import { createDataSourceIndex } from '../transform/data-source-index.js';
 import {
+  convertDataSourceProperties,
   convertDataSourceProperty,
-  resolveRelationProperty,
 } from '../transform/data-source-properties.js';
 import { transformEnhancedMarkdown } from '../transform/enhanced-markdown.js';
 import {
   buildIdToPathMap,
   resolveInternalLinks,
 } from '../transform/obsidian-links.js';
+import { replaceRetainedSignedUrls } from '../transform/signed-asset-urls.js';
 import { planMissingResources } from './deletion-guard.js';
 import { allocateOutputPaths } from './output-path-allocator.js';
 import { validateSyncPlan, type SyncPlanAction } from './plan-validator.js';
@@ -60,7 +61,7 @@ import {
 
 const API_VERSION = '2026-03-11';
 const TOOL_VERSION = '0.1.0';
-const TRANSFORM_VERSION = '1';
+const TRANSFORM_VERSION = '2';
 
 interface LockBoundary {
   acquire(): Promise<void>;
@@ -132,6 +133,8 @@ interface PlannedContent {
   resource: CensusResource;
   path: PlannedResourcePath;
   body: string;
+  bodyReplacedCount: number;
+  frontmatterTitle: string;
   contentHash: string;
   structureHash: string;
   warnings: Array<{ type: string; message: string }>;
@@ -149,6 +152,17 @@ interface PlannedContent {
 
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+async function finalizePageBody(
+  markdown: string,
+  idToPath: ReadonlyMap<string, string>,
+  resolveLinks: boolean,
+): Promise<{ markdown: string; replacedCount: number }> {
+  const linked = resolveLinks
+    ? await resolveInternalLinks(markdown, idToPath)
+    : markdown;
+  return replaceRetainedSignedUrls(linked);
 }
 
 function configHash(config: AppConfig): string {
@@ -288,6 +302,8 @@ export async function runSyncOrchestrator(
       Array<{ notionId: string; properties: Record<string, unknown> }>
     >();
     const rowProperties = new Map<string, Record<string, unknown>>();
+    const sourceTitleById = new Map<string, string>();
+    const titleReplacedCounts = new Map<string, number>();
     const seenDataSources = new Set<string>();
     for (const root of validationRoots) {
       const result = await dependencies.census(root.pageId);
@@ -351,13 +367,25 @@ export async function runSyncOrchestrator(
         }
         dataSourceRows.set(resource.notionId, indexedRows);
       }
-      const expanded = pathExpanded.filter(
+      const finalizedPathExpanded = pathExpanded.map((resource) => {
+        sourceTitleById.set(resource.notionId, resource.title);
+        const finalizedTitle = replaceRetainedSignedUrls(resource.title);
+        if (finalizedTitle.replacedCount > 0) {
+          titleReplacedCounts.set(
+            resource.notionId,
+            (titleReplacedCounts.get(resource.notionId) ?? 0) +
+              finalizedTitle.replacedCount,
+          );
+        }
+        return { ...resource, title: finalizedTitle.markdown };
+      });
+      const expanded = finalizedPathExpanded.filter(
         (resource) => !options.pageId || resource.notionId === options.pageId,
       );
       if (actionRoots.some(({ pageId }) => pageId === root.pageId)) {
         censuses.push({ ...result, resources: expanded });
       }
-      pathCensuses.push({ ...result, resources: pathExpanded });
+      pathCensuses.push({ ...result, resources: finalizedPathExpanded });
     }
 
     const rootIdByNotionId = new Map<string, string>();
@@ -438,7 +466,7 @@ export async function runSyncOrchestrator(
           : await dependencies.retrieveContent(resource.notionId);
         const sourceBody = indexedRows
           ? createDataSourceIndex({
-              name: resource.title,
+              name: sourceTitleById.get(resource.notionId) ?? resource.title,
               notionUrl: resource.url,
               dataSourceId: resource.dataSourceId ?? resource.notionId,
               schema: Object.entries(indexedRows[0]?.properties ?? {}).map(
@@ -460,7 +488,13 @@ export async function runSyncOrchestrator(
                 const rowPath = pathById.get(notionId);
                 const rowResource = pathResourceById.get(notionId);
                 return rowPath && rowResource
-                  ? [{ title: rowResource.title, path: rowPath.expectedPath }]
+                  ? [
+                      {
+                        title:
+                          sourceTitleById.get(notionId) ?? rowResource.title,
+                        path: rowPath.expectedPath,
+                      },
+                    ]
                   : [];
               }),
               syncedAt: startedAt,
@@ -507,7 +541,13 @@ export async function runSyncOrchestrator(
           assetWarnings = assetPlan.warnings;
           plannedAssetPlan = assetPlan;
         }
-        if (!indexedRows) body = await resolveInternalLinks(body, idToPath);
+        const finalizedBody = await finalizePageBody(
+          body,
+          idToPath,
+          !indexedRows,
+        );
+        body = finalizedBody.markdown;
+        const bodyReplacedCount = finalizedBody.replacedCount;
         const contentHash = hash(body);
         const structureHash = hash(
           JSON.stringify({
@@ -533,18 +573,31 @@ export async function runSyncOrchestrator(
         };
         const stored = existingById.get(resource.notionId);
         const rawProperties = rowProperties.get(resource.notionId);
-        const properties = rawProperties
-          ? Object.fromEntries(
-              Object.entries(rawProperties).map(([name, property]) => [
-                name,
-                property !== null &&
-                typeof property === 'object' &&
-                (property as Record<string, unknown>).type === 'relation'
-                  ? resolveRelationProperty(property, idToPath)
-                  : convertDataSourceProperty(property),
-              ]),
-            )
+        const convertedProperties = rawProperties
+          ? convertDataSourceProperties(rawProperties, idToPath)
           : undefined;
+        const properties = convertedProperties?.properties;
+        const finalizedTitle = replaceRetainedSignedUrls(resource.title);
+        const propertyReplacedCount =
+          (convertedProperties?.replacedCount ?? 0) +
+          (indexedRows
+            ? 0
+            : (titleReplacedCounts.get(resource.notionId) ?? 0)) +
+          finalizedTitle.replacedCount;
+        const signedUrlReplacedCount =
+          bodyReplacedCount + propertyReplacedCount;
+        if (signedUrlReplacedCount > 0) {
+          assetWarnings = [
+            ...assetWarnings,
+            {
+              runId,
+              resourceId: resource.notionId,
+              warningType: 'asset_signed_url_replaced',
+              message: `Replaced ${signedUrlReplacedCount} retained Notion signed asset URL occurrence(s) with stable references.`,
+              createdAt: startedAt,
+            },
+          ];
+        }
         let reconciliation = reconcileResource(
           storedFingerprint(
             stored,
@@ -596,6 +649,8 @@ export async function runSyncOrchestrator(
           resource,
           path,
           body,
+          bodyReplacedCount,
+          frontmatterTitle: finalizedTitle.markdown,
           contentHash,
           structureHash,
           warnings,
@@ -870,10 +925,18 @@ export async function runSyncOrchestrator(
                 download: (request) => dependencies.downloadAsset!(request),
               },
             );
-            item.body = await resolveInternalLinks(
+            const finalizedBody = await finalizePageBody(
               processed.markdown,
               idToPath,
+              true,
             );
+            if (finalizedBody.replacedCount !== item.bodyReplacedCount) {
+              throw new DomainError(
+                'safety',
+                'Signed asset URL finalization changed between Plan and Apply. Run a dry-run again before retrying the sync.',
+              );
+            }
+            item.body = finalizedBody.markdown;
             item.assets = processed.assets;
             item.assetStateUpdates = processed.assetStateUpdates;
             // Apply の戻り値は Apply 中の警告だけなので、Plan で保持した警告へ追加する。
@@ -891,7 +954,7 @@ export async function runSyncOrchestrator(
                 notionObjectType: item.resource.objectType,
                 notionLastEditedTime: item.resource.lastEditedTime,
                 syncedAt: startedAt,
-                title: item.resource.title,
+                title: item.frontmatterTitle,
                 contentHash: item.contentHash,
                 ...(item.properties ? { properties: item.properties } : {}),
               });

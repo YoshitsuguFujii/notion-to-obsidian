@@ -38,6 +38,7 @@ export interface MockPage {
   markdownTruncated?: boolean;
   unknownBlockIds?: string[];
   discoverableAsChild?: boolean;
+  properties?: Record<string, unknown>;
 }
 
 interface MockDataSource {
@@ -58,7 +59,7 @@ function pageResponse(page: MockPage) {
     parent: page.parentId
       ? { type: 'page_id', page_id: page.parentId }
       : { type: 'workspace', workspace: true },
-    properties: {
+    properties: page.properties ?? {
       Name: {
         type: 'title',
         title: [{ plain_text: page.title }],

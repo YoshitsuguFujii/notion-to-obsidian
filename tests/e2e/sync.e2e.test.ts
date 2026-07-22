@@ -1,4 +1,12 @@
-import { access, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -886,6 +894,130 @@ describe('sync E2E', () => {
     });
   });
 
+  it('v1で保存された一時queryを全件再同期で修復し次の通常同期では内容を変更しない', async () => {
+    const databaseId = '77777777-7777-4777-8777-777777777777';
+    const dataSourceId = '88888888-8888-4888-8888-888888888888';
+    const rowId = '99999999-9999-4999-8999-999999999999';
+    const bodyUrl = 'https://file.notion.so/body.png';
+    const fileUrl = 'https://file.notion.so/file.pdf';
+    const signed = (url: string) => `${url}?X-Amz-Signature=temporary#preview`;
+    const app = await harness(
+      [
+        rootPage({
+          blocks: [
+            {
+              id: databaseId,
+              type: 'child_database',
+              child_database: { title: 'Tasks' },
+              parent: { type: 'page_id', page_id: ROOT_ID },
+              last_edited_time: '2026-07-12T00:00:00.000Z',
+              in_trash: false,
+            },
+          ],
+        }),
+      ],
+      {
+        dataSources: [
+          {
+            id: dataSourceId,
+            name: 'Tasks',
+            databaseId,
+            rows: [
+              {
+                id: rowId,
+                title: 'First task',
+                parentId: databaseId,
+                markdown: `<table>\n![Hidden](${signed(bodyUrl)})\n`,
+                properties: {
+                  Name: {
+                    type: 'title',
+                    title: [{ plain_text: 'First task' }],
+                  },
+                  Files: {
+                    type: 'files',
+                    files: [
+                      {
+                        name: 'file.pdf',
+                        type: 'file',
+                        file: { url: signed(fileUrl) },
+                      },
+                    ],
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    );
+    await app.sync();
+    const path = join(app.managedRoot, 'Notes', 'Tasks', 'First task.md');
+    const current = await readFile(path, 'utf8');
+    let v1Content = current
+      .replace(bodyUrl, signed(bodyUrl))
+      .replace(fileUrl, signed(fileUrl));
+    const bodyStart = v1Content.indexOf('---\n', 4) + 4;
+    const v1BodyHash = createHash('sha256')
+      .update(v1Content.slice(bodyStart))
+      .digest('hex');
+    v1Content = v1Content.replace(
+      /^content_hash: .+$/mu,
+      `content_hash: ${v1BodyHash}`,
+    );
+    await writeFile(path, v1Content);
+    const stored = app.store.getResource(rowId);
+    if (!stored) throw new Error('seed resource was not stored');
+    app.store.upsertResource({ ...stored, contentHash: v1BodyHash });
+    app.store.beginRun({
+      runId: 'seed-v1-run',
+      startedAt: '2026-07-12T01:30:00.000Z',
+      mode: 'incremental',
+      configHash: 'v1-config',
+      apiVersion: '2026-03-11',
+      toolVersion: '0.1.0',
+      transformVersion: '1',
+    });
+    app.store.finishRun({
+      runId: 'seed-v1-run',
+      finishedAt: '2026-07-12T01:31:00.000Z',
+      success: true,
+      partial: false,
+      counts: {
+        create: 0,
+        update: 0,
+        move: 0,
+        trash: 0,
+        unchanged: 3,
+        error: 0,
+      },
+    });
+    app.setNow('2026-07-12T02:00:00.000Z');
+
+    const upgraded = await app.sync({ full: true });
+
+    expect(upgraded.actions.filter(({ type }) => type === 'UPDATE')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ notionId: ROOT_ID }),
+        expect.objectContaining({ notionId: databaseId }),
+        expect.objectContaining({ notionId: rowId }),
+      ]),
+    );
+    const repaired = await readFile(path, 'utf8');
+    expect(repaired).not.toContain('X-Amz-Signature');
+    expect(repaired).not.toContain('#preview');
+    expect(app.store.getLatestRun()?.transformVersion).toBe('2');
+    const fixedTime = new Date('2020-02-03T04:05:06.000Z');
+    await utimes(path, fixedTime, fixedTime);
+
+    const second = await app.sync();
+
+    expect(second.actions).toContainEqual(
+      expect.objectContaining({ type: 'UNCHANGED', notionId: rowId }),
+    );
+    expect(await readFile(path, 'utf8')).toBe(repaired);
+    expect((await stat(path)).mtimeMs).toBe(fixedTime.getTime());
+  });
+
   it('Data Sourceのdatabase IDを指定すると行一覧のindexだけを出力する', async () => {
     const databaseId = '77777777-7777-4777-8777-777777777777';
     const dataSourceId = '88888888-8888-4888-8888-888888888888';
@@ -1753,6 +1885,7 @@ describe('初回運用フロー E2E', () => {
     expect(app.store.getLatestRun()).toBeUndefined();
 
     await app.sync();
+    expect(app.store.getLatestRun()?.transformVersion).toBe('2');
     const path = join(app.managedRoot, 'Notes.md');
     const content = await readFile(path, 'utf8');
     const mtime = (await stat(path)).mtimeMs;

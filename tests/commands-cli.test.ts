@@ -271,4 +271,38 @@ describe('CLI', () => {
       })}\n`,
     );
   });
+
+  it.each([
+    ['通常出力', []],
+    ['JSON出力', ['--json']],
+  ] as const)('%sでWARNING messageを出力する', async (_format, options) => {
+    const write = vi.fn();
+    const warningMessage =
+      'Replaced 2 retained Notion signed asset URL occurrence(s) with stable references.';
+    const program = createProgram({
+      write,
+      handlers: {
+        sync: () => ({
+          ok: false,
+          partial: true,
+          actions: [
+            {
+              type: 'WARNING' as const,
+              notionId: 'page',
+              message: warningMessage,
+            },
+          ],
+        }),
+      },
+    });
+
+    await program.parseAsync(['node', 'cli', 'sync', ...options]);
+
+    const calls: unknown[][] = write.mock.calls;
+    const output = calls
+      .flatMap((call) => call)
+      .map(String)
+      .join('');
+    expect(output).toContain(warningMessage);
+  });
 });

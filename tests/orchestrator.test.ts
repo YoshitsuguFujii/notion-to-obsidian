@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../src/config/index.js';
+import { createLogger } from '../src/logging/index.js';
 import type { BlockNode } from '../src/notion/blocks.js';
 import type { RootCensus } from '../src/notion/census.js';
 import { runSyncOrchestrator } from '../src/sync/orchestrator.js';
@@ -146,6 +147,282 @@ afterEach(async () => {
 });
 
 describe('runSyncOrchestrator', () => {
+  it.each([
+    ['table', '<table>\n![Hidden]({url})'],
+    ['empty block', '<empty-block/>\n![Hidden]({url})'],
+    ['callout', '> [!note]\n> ![Hidden]({url})'],
+  ])(
+    '%sに続いてMarkdownとして解釈されない画像も実ファイルへ一時queryを残さない',
+    async (_trigger, template) => {
+      const context = await fixture();
+      const signedUrl =
+        'https://file.notion.so/hidden.png?X-Amz-Signature=temporary#fragment';
+      const logLines: string[] = [];
+      let run = 0;
+      const dependencies = {
+        store: context.store,
+        lock: context.lock,
+        census: () => Promise.resolve(context.census),
+        retrieveContent: () =>
+          Promise.resolve({
+            markdown: template.replace('{url}', signedUrl),
+            warnings: [],
+            sidecars: [],
+          }),
+        retrieveBlocks: () => Promise.resolve([]),
+        downloadAsset: () =>
+          Promise.reject(new Error('download must not be attempted')),
+        now: () => '2026-07-12T01:00:00.000Z',
+        runId: () => `run-retained-${++run}`,
+        logger: createLogger({
+          format: 'json' as const,
+          level: 'debug',
+          write: (line) => logLines.push(line),
+        }),
+      };
+
+      const result = await runSyncOrchestrator(
+        context.config,
+        { strict: true },
+        dependencies,
+      );
+
+      const markdown = await readFile(
+        join(context.config.obsidian.managedPath, 'Notes.md'),
+        'utf8',
+      );
+      expect(markdown).toContain('https://file.notion.so/hidden.png');
+      expect(markdown).not.toContain('X-Amz-Signature');
+      expect(markdown).not.toContain('#fragment');
+      const warningActions = result.actions.filter(
+        ({ type }) => type === 'WARNING',
+      );
+      expect(warningActions).toHaveLength(1);
+      expect(warningActions[0]?.notionId).toBe(rootId);
+      expect(warningActions[0]?.message).toContain('1');
+      const storedWarnings = context.store.listWarnings(result.runId);
+      expect(storedWarnings).toHaveLength(1);
+      expect(storedWarnings[0]?.resourceId).toBe(rootId);
+      expect(storedWarnings[0]?.warningType).toBe('asset_signed_url_replaced');
+      expect(storedWarnings[0]?.message).not.toContain('temporary');
+      expect(logLines.join('\n')).not.toContain('temporary');
+      expect(logLines.join('\n')).not.toContain('X-Amz-Signature');
+      expect(result.partialFailure).toBe(true);
+    },
+  );
+
+  it('一時queryの警告はUNCHANGEDでも再表示し本文とmtimeを変更しない', async () => {
+    const context = await fixture();
+    const signedUrl =
+      'https://file.notion.so/hidden.png?X-Amz-Signature=temporary';
+    let run = 0;
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: () => Promise.resolve(context.census),
+      retrieveContent: () =>
+        Promise.resolve({
+          markdown: `<table>\n![Hidden](${signedUrl})`,
+          warnings: [],
+          sidecars: [],
+        }),
+      retrieveBlocks: () => Promise.resolve([]),
+      downloadAsset: () =>
+        Promise.reject(new Error('download must not be attempted')),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-retained-unchanged-${++run}`,
+    };
+    await runSyncOrchestrator(context.config, {}, dependencies);
+    const target = join(context.config.obsidian.managedPath, 'Notes.md');
+    const fixedTime = new Date('2020-01-02T03:04:05.000Z');
+    await utimes(target, fixedTime, fixedTime);
+    const before = await readFile(target, 'utf8');
+
+    const second = await runSyncOrchestrator(
+      context.config,
+      { strict: true },
+      dependencies,
+    );
+
+    expect(second.actions).toContainEqual(
+      expect.objectContaining({ type: 'UNCHANGED', notionId: rootId }),
+    );
+    expect(
+      second.actions.filter(({ type }) => type === 'WARNING'),
+    ).toHaveLength(1);
+    expect(context.store.listWarnings(second.runId)).toEqual([
+      expect.objectContaining({ warningType: 'asset_signed_url_replaced' }),
+    ]);
+    expect(second.partialFailure).toBe(true);
+    expect(await readFile(target, 'utf8')).toBe(before);
+    expect((await stat(target)).mtimeMs).toBe(fixedTime.getTime());
+  });
+
+  it('一時queryのdry-runは副作用を出さず実同期と同じ検出件数を報告する', async () => {
+    const context = await fixture();
+    const signedUrl =
+      'https://file.notion.so/hidden.png?X-Amz-Signature=temporary';
+    let run = 0;
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: () => Promise.resolve(context.census),
+      retrieveContent: () =>
+        Promise.resolve({
+          markdown: `<table>\n${signedUrl}\n${signedUrl}`,
+          warnings: [],
+          sidecars: [],
+        }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-retained-dry-${++run}`,
+    };
+
+    const dryRun = await runSyncOrchestrator(
+      context.config,
+      { dryRun: true, strict: true },
+      dependencies,
+    );
+
+    const dryRunWarnings = dryRun.actions.filter(
+      ({ type }) => type === 'WARNING',
+    );
+    expect(dryRunWarnings).toHaveLength(1);
+    expect(dryRunWarnings[0]?.message).toContain('2');
+    expect(dryRun.partialFailure).toBe(true);
+    expect(context.store.getLatestRun()).toBeUndefined();
+    await expect(
+      access(join(context.config.obsidian.managedPath, 'Notes.md')),
+    ).rejects.toThrow();
+
+    const applied = await runSyncOrchestrator(
+      context.config,
+      { strict: true },
+      dependencies,
+    );
+
+    const appliedWarnings = applied.actions.filter(
+      ({ type }) => type === 'WARNING',
+    );
+    expect(appliedWarnings).toEqual(dryRunWarnings);
+    expect(context.store.listWarnings(applied.runId)).toHaveLength(1);
+  });
+
+  it('frontmatterのtitleに残った一時queryを安定化する', async () => {
+    const context = await fixture();
+    const childId = '22222222-2222-4222-8222-222222222222';
+    const signedUrl =
+      'https://file.notion.so/title?X-Amz-Signature=temporary#preview';
+    const census: RootCensus = {
+      ...context.census,
+      resources: [
+        ...context.census.resources,
+        {
+          notionId: childId,
+          objectType: 'page',
+          title: `Reference ${signedUrl}`,
+          parentId: rootId,
+          parentType: 'page',
+          rootId,
+          lastEditedTime: '2026-07-12T00:00:00.000Z',
+          inTrash: false,
+          url: `https://www.notion.so/${childId}`,
+        },
+      ],
+    };
+
+    const result = await runSyncOrchestrator(
+      context.config,
+      { strict: true },
+      {
+        store: context.store,
+        lock: context.lock,
+        census: () => Promise.resolve(census),
+        retrieveContent: () =>
+          Promise.resolve({ markdown: '# Body\n', warnings: [], sidecars: [] }),
+        now: () => '2026-07-12T01:00:00.000Z',
+        runId: () => 'run-signed-title',
+      },
+    );
+
+    const localPath = context.store.getResource(childId)?.localPath;
+    if (!localPath) throw new Error('child resource was not stored');
+    const markdown = await readFile(
+      join(context.config.obsidian.managedPath, localPath),
+      'utf8',
+    );
+    expect(markdown).toContain('title: Reference https://file.notion.so/title');
+    expect(markdown).not.toContain('X-Amz-Signature');
+    expect(markdown).not.toContain('#preview');
+    expect(localPath).not.toContain('temporary');
+    expect(context.store.getResource(childId)?.title).toBe(
+      'Reference https://file.notion.so/title',
+    );
+    expect(JSON.stringify(result.actions)).not.toContain('temporary');
+    expect(
+      result.actions.filter(
+        ({ type, notionId }) => type === 'WARNING' && notionId === childId,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('一時queryの警告とdownload失敗を種類ごとに1件だけ保存する', async () => {
+    const context = await fixture();
+    const retainedUrl =
+      'https://file.notion.so/hidden.png?X-Amz-Signature=retained';
+    const failedUrl =
+      'https://file.notion.so/download.png?X-Amz-Signature=download';
+    const blockId = '44444444-4444-4444-8444-444444444444';
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: () => Promise.resolve(context.census),
+      retrieveContent: () =>
+        Promise.resolve({
+          markdown: [
+            `<table>\n![Hidden](${retainedUrl})`,
+            `![Download](${failedUrl})`,
+          ].join('\n\n'),
+          warnings: [],
+          sidecars: [],
+        }),
+      retrieveBlocks: () =>
+        Promise.resolve([
+          {
+            block: {
+              id: blockId,
+              type: 'image' as const,
+              image: {
+                type: 'file' as const,
+                file: { url: failedUrl },
+                caption: [],
+              },
+            },
+            children: [],
+          },
+        ]),
+      downloadAsset: () => Promise.reject(new Error('network unavailable')),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => 'run-retained-download-failure',
+    };
+
+    const result = await runSyncOrchestrator(
+      context.config,
+      { strict: true },
+      dependencies,
+    );
+
+    expect(
+      result.actions.filter(({ type }) => type === 'WARNING'),
+    ).toHaveLength(1);
+    expect(context.store.listWarnings(result.runId)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ warningType: 'asset_signed_url_replaced' }),
+        expect.objectContaining({ warningType: 'asset_download_failed' }),
+      ]),
+    );
+    expect(context.store.listWarnings(result.runId)).toHaveLength(2);
+  });
+
   it('対応先を一意に決められないアセットをdry-runの警告として表示する', async () => {
     const context = await fixture();
 
@@ -616,6 +893,119 @@ describe('runSyncOrchestrator', () => {
         ),
       ),
     ).toContain('Status: Done');
+  });
+
+  it('Data Source行の本文・title・propertiesに残った一時queryを1件の警告へ集約する', async () => {
+    const { store, config, census, lock } = await fixture();
+    const databaseId = '22222222-2222-4222-8222-222222222222';
+    const rowId = '33333333-3333-4333-8333-333333333333';
+    const signedUrl = (name: string) =>
+      `https://file.notion.so/${name}?X-Amz-Signature=temporary-${name}#preview`;
+    const withDatabase: RootCensus = {
+      ...census,
+      resources: [
+        ...census.resources,
+        {
+          notionId: databaseId,
+          objectType: 'database',
+          title: 'Tasks',
+          parentId: rootId,
+          parentType: 'page',
+          rootId,
+          lastEditedTime: '2026-07-12T00:00:00.000Z',
+          inTrash: false,
+          url: `https://www.notion.so/${databaseId}`,
+          dataSourceId: 'source-id',
+        },
+      ],
+    };
+
+    const result = await runSyncOrchestrator(
+      config,
+      { strict: true },
+      {
+        store,
+        lock,
+        census: () => Promise.resolve(withDatabase),
+        fetchDataSourceRows: () =>
+          Promise.resolve([
+            {
+              object: 'page',
+              id: rowId,
+              url: `https://www.notion.so/${rowId}`,
+              last_edited_time: '2026-07-12T00:00:00.000Z',
+              properties: {
+                Name: { type: 'title', title: [{ plain_text: 'First task' }] },
+                Reference: {
+                  type: 'title',
+                  title: [{ plain_text: signedUrl('title') }],
+                },
+                Files: {
+                  type: 'files',
+                  files: [
+                    {
+                      name: 'attachment',
+                      type: 'file',
+                      file: { url: signedUrl('file') },
+                    },
+                    {
+                      name: signedUrl('external-name'),
+                      type: 'external',
+                      external: {
+                        url: 'https://example.com/file?download=1',
+                      },
+                    },
+                  ],
+                },
+                Formula: {
+                  type: 'formula',
+                  formula: {
+                    type: 'array',
+                    array: [
+                      { type: 'file', file: { url: signedUrl('formula') } },
+                    ],
+                  },
+                },
+                Future: {
+                  type: 'future_type',
+                  future_type: { bare: signedUrl('future') },
+                },
+              },
+            },
+          ]),
+        retrieveContent: (notionId) =>
+          Promise.resolve({
+            markdown:
+              notionId === rowId
+                ? `<table>\n![Hidden](${signedUrl('body')})`
+                : '# Body\n',
+            warnings: [],
+            sidecars: [],
+          }),
+        now: () => '2026-07-12T01:00:00.000Z',
+        runId: () => 'run-data-source-signed-url',
+      },
+    );
+
+    const markdown = await readFile(
+      join(config.obsidian.managedPath, 'Notes', 'Tasks', 'First task.md'),
+      'utf8',
+    );
+    expect(markdown).not.toContain('X-Amz-Signature');
+    expect(markdown).not.toContain('#preview');
+    expect(markdown).toContain('https://example.com/file?download=1');
+    const warnings = result.actions.filter(
+      ({ type, notionId }) => type === 'WARNING' && notionId === rowId,
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.message).toContain('7');
+    expect(store.listWarnings(result.runId)).toEqual([
+      expect.objectContaining({
+        resourceId: rowId,
+        warningType: 'asset_signed_url_replaced',
+      }),
+    ]);
+    expect(result.partialFailure).toBe(true);
   });
 
   it('assetをdownload・URL rewrite・DB保存し、2回目はcacheで再取得しない', async () => {
