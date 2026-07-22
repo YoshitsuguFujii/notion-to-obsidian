@@ -423,6 +423,30 @@ describe('sync E2E', () => {
     expect((await stat(path)).mtimeMs).toBe(mtime);
   });
 
+  it('全件dry-runは管理ファイルと同期状態を変更せず更新計画を返す', async () => {
+    const app = await harness([rootPage()]);
+    await app.sync();
+    const path = join(app.managedRoot, 'Notes.md');
+    const content = await readFile(path, 'utf8');
+    const mtime = (await stat(path)).mtimeMs;
+    const resource = app.store.getResource(ROOT_ID);
+    const latestRun = app.store.getLatestRun();
+
+    const result = await app.sync({ full: true, dryRun: true, strict: true });
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      partialFailure: false,
+    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'UPDATE', notionId: ROOT_ID }),
+    );
+    expect(await readFile(path, 'utf8')).toBe(content);
+    expect((await stat(path)).mtimeMs).toBe(mtime);
+    expect(app.store.getResource(ROOT_ID)).toEqual(resource);
+    expect(app.store.getLatestRun()).toEqual(latestRun);
+  });
+
   it('指定ルートの同期を繰り返しても内容とmtimeを変更しない', async () => {
     const app = await harness([
       rootPage(),

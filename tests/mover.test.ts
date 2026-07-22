@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { moveManagedFile } from '../src/filesystem/mover.js';
 
-const notionId = '11111111-1111-4111-8111-111111111111';
+const notionId = '11111111-1111-8111-a111-111111111111';
 const directories: string[] = [];
 const markdown = `---\nmanaged_by: notion-to-obsidian\nnotion_id: ${notionId}\n---\nBody\n`;
 
