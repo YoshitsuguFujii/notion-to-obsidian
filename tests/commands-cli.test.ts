@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createProgram } from '../src/cli/index.js';
 import { exitCodeFor } from '../src/commands/result.js';
 import { runStatus } from '../src/commands/status.js';
-import { runVerify } from '../src/commands/verify.js';
+import { runVerify, runVerifyCommand } from '../src/commands/verify.js';
 import { DomainError, InfraError } from '../src/errors.js';
 import { SqliteStateStore } from '../src/storage/sqlite-store.js';
 
@@ -175,6 +175,63 @@ describe('status and verify', () => {
     } finally {
       await harness.close();
     }
+  });
+
+  it('設定したstate DBと管理ファイルが一致すればverify commandは成功する', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'notion-verify-command-'));
+    const vault = join(root, 'vault');
+    const managedRoot = join(vault, 'Mirror');
+    const databasePath = join(root, 'state.db');
+    const configPath = join(root, 'config.yaml');
+    const notionId = 'aaaaaaaa-aaaa-8aaa-9aaa-aaaaaaaaaaaa';
+    await mkdir(managedRoot, { recursive: true });
+    await writeFile(
+      join(managedRoot, 'Page.md'),
+      `---\nmanaged_by: notion-to-obsidian\nnotion_id: ${notionId}\n---\nBody\n`,
+    );
+    {
+      using store = new SqliteStateStore(databasePath);
+      store.upsertRoot({
+        rootPageId: notionId,
+        localName: 'Page',
+        status: 'complete',
+      });
+      store.upsertResource({
+        notionId,
+        objectType: 'page',
+        rootId: notionId,
+        title: 'Page',
+        localPath: 'Page.md',
+        expectedPath: 'Page.md',
+        resolvedFilename: 'Page',
+        lastEditedTime: '2026-07-12T00:00:00.000Z',
+        inTrash: false,
+        status: 'active',
+        createdAt: '2026-07-12T00:00:00.000Z',
+        updatedAt: '2026-07-12T00:00:00.000Z',
+      });
+    }
+    await writeFile(
+      configPath,
+      [
+        'notion:',
+        '  roots:',
+        `    - page_id: '${notionId}'`,
+        "      local_name: 'Page'",
+        'obsidian:',
+        `  vault_path: '${vault}'`,
+        "  managed_path: 'Mirror'",
+        'state:',
+        `  database_path: '${databasePath}'`,
+      ].join('\n'),
+    );
+
+    await expect(
+      runVerifyCommand({
+        configPath,
+        env: { NOTION_TOKEN: 'synthetic-test-token' },
+      }),
+    ).resolves.toEqual({ ok: true, unmanaged: [], issues: [] });
   });
 });
 
