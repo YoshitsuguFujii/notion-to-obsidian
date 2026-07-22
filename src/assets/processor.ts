@@ -7,6 +7,7 @@ import remarkParse from 'remark-parse';
 import type { BlockNode } from '../notion/blocks.js';
 import type { AssetState, WarningState } from '../storage/state-store.js';
 import { rewriteAssetUrls } from '../transform/asset-urls.js';
+import { stableReferenceUrl } from '../transform/stable-url.js';
 import {
   assertNoSymlinkEscape,
   joinManagedPath,
@@ -147,21 +148,6 @@ function markdownAssets(markdown: string): MarkdownAsset[] {
 
 function shortHash(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 16);
-}
-
-function stableReferenceUrl(
-  remoteUrl: string,
-  source: 'notion' | 'external',
-): string {
-  if (source === 'external') return remoteUrl;
-  try {
-    const parsed = new URL(remoteUrl);
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')
-      return remoteUrl;
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return remoteUrl;
-  }
 }
 
 function sanitizeDownloadFailure(error: unknown): string {
