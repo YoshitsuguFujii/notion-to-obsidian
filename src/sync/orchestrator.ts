@@ -61,7 +61,7 @@ import {
 
 const API_VERSION = '2026-03-11';
 const TOOL_VERSION = '0.1.0';
-const TRANSFORM_VERSION = '1';
+const TRANSFORM_VERSION = '2';
 
 interface LockBoundary {
   acquire(): Promise<void>;
@@ -302,6 +302,8 @@ export async function runSyncOrchestrator(
       Array<{ notionId: string; properties: Record<string, unknown> }>
     >();
     const rowProperties = new Map<string, Record<string, unknown>>();
+    const sourceTitleById = new Map<string, string>();
+    const titleReplacedCounts = new Map<string, number>();
     const seenDataSources = new Set<string>();
     for (const root of validationRoots) {
       const result = await dependencies.census(root.pageId);
@@ -365,13 +367,25 @@ export async function runSyncOrchestrator(
         }
         dataSourceRows.set(resource.notionId, indexedRows);
       }
-      const expanded = pathExpanded.filter(
+      const finalizedPathExpanded = pathExpanded.map((resource) => {
+        sourceTitleById.set(resource.notionId, resource.title);
+        const finalizedTitle = replaceRetainedSignedUrls(resource.title);
+        if (finalizedTitle.replacedCount > 0) {
+          titleReplacedCounts.set(
+            resource.notionId,
+            (titleReplacedCounts.get(resource.notionId) ?? 0) +
+              finalizedTitle.replacedCount,
+          );
+        }
+        return { ...resource, title: finalizedTitle.markdown };
+      });
+      const expanded = finalizedPathExpanded.filter(
         (resource) => !options.pageId || resource.notionId === options.pageId,
       );
       if (actionRoots.some(({ pageId }) => pageId === root.pageId)) {
         censuses.push({ ...result, resources: expanded });
       }
-      pathCensuses.push({ ...result, resources: pathExpanded });
+      pathCensuses.push({ ...result, resources: finalizedPathExpanded });
     }
 
     const rootIdByNotionId = new Map<string, string>();
@@ -452,7 +466,7 @@ export async function runSyncOrchestrator(
           : await dependencies.retrieveContent(resource.notionId);
         const sourceBody = indexedRows
           ? createDataSourceIndex({
-              name: resource.title,
+              name: sourceTitleById.get(resource.notionId) ?? resource.title,
               notionUrl: resource.url,
               dataSourceId: resource.dataSourceId ?? resource.notionId,
               schema: Object.entries(indexedRows[0]?.properties ?? {}).map(
@@ -474,7 +488,13 @@ export async function runSyncOrchestrator(
                 const rowPath = pathById.get(notionId);
                 const rowResource = pathResourceById.get(notionId);
                 return rowPath && rowResource
-                  ? [{ title: rowResource.title, path: rowPath.expectedPath }]
+                  ? [
+                      {
+                        title:
+                          sourceTitleById.get(notionId) ?? rowResource.title,
+                        path: rowPath.expectedPath,
+                      },
+                    ]
                   : [];
               }),
               syncedAt: startedAt,
@@ -560,6 +580,9 @@ export async function runSyncOrchestrator(
         const finalizedTitle = replaceRetainedSignedUrls(resource.title);
         const propertyReplacedCount =
           (convertedProperties?.replacedCount ?? 0) +
+          (indexedRows
+            ? 0
+            : (titleReplacedCounts.get(resource.notionId) ?? 0)) +
           finalizedTitle.replacedCount;
         const signedUrlReplacedCount =
           bodyReplacedCount + propertyReplacedCount;
