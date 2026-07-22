@@ -49,6 +49,7 @@ import {
   buildIdToPathMap,
   resolveInternalLinks,
 } from '../transform/obsidian-links.js';
+import { replaceRetainedSignedUrls } from '../transform/signed-asset-urls.js';
 import { planMissingResources } from './deletion-guard.js';
 import { allocateOutputPaths } from './output-path-allocator.js';
 import { validateSyncPlan, type SyncPlanAction } from './plan-validator.js';
@@ -132,6 +133,7 @@ interface PlannedContent {
   resource: CensusResource;
   path: PlannedResourcePath;
   body: string;
+  bodyReplacedCount: number;
   contentHash: string;
   structureHash: string;
   warnings: Array<{ type: string; message: string }>;
@@ -149,6 +151,17 @@ interface PlannedContent {
 
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+async function finalizePageBody(
+  markdown: string,
+  idToPath: ReadonlyMap<string, string>,
+  resolveLinks: boolean,
+): Promise<{ markdown: string; replacedCount: number }> {
+  const linked = resolveLinks
+    ? await resolveInternalLinks(markdown, idToPath)
+    : markdown;
+  return replaceRetainedSignedUrls(linked);
 }
 
 function configHash(config: AppConfig): string {
@@ -507,7 +520,13 @@ export async function runSyncOrchestrator(
           assetWarnings = assetPlan.warnings;
           plannedAssetPlan = assetPlan;
         }
-        if (!indexedRows) body = await resolveInternalLinks(body, idToPath);
+        const finalizedBody = await finalizePageBody(
+          body,
+          idToPath,
+          !indexedRows,
+        );
+        body = finalizedBody.markdown;
+        const bodyReplacedCount = finalizedBody.replacedCount;
         const contentHash = hash(body);
         const structureHash = hash(
           JSON.stringify({
@@ -545,6 +564,21 @@ export async function runSyncOrchestrator(
               ]),
             )
           : undefined;
+        const propertyReplacedCount = 0;
+        const signedUrlReplacedCount =
+          bodyReplacedCount + propertyReplacedCount;
+        if (signedUrlReplacedCount > 0) {
+          assetWarnings = [
+            ...assetWarnings,
+            {
+              runId,
+              resourceId: resource.notionId,
+              warningType: 'asset_signed_url_replaced',
+              message: `Replaced ${signedUrlReplacedCount} retained Notion signed asset URL occurrence(s) with stable references.`,
+              createdAt: startedAt,
+            },
+          ];
+        }
         let reconciliation = reconcileResource(
           storedFingerprint(
             stored,
@@ -596,6 +630,7 @@ export async function runSyncOrchestrator(
           resource,
           path,
           body,
+          bodyReplacedCount,
           contentHash,
           structureHash,
           warnings,
@@ -870,10 +905,18 @@ export async function runSyncOrchestrator(
                 download: (request) => dependencies.downloadAsset!(request),
               },
             );
-            item.body = await resolveInternalLinks(
+            const finalizedBody = await finalizePageBody(
               processed.markdown,
               idToPath,
+              true,
             );
+            if (finalizedBody.replacedCount !== item.bodyReplacedCount) {
+              throw new DomainError(
+                'safety',
+                'Signed asset URL finalization changed between Plan and Apply. Run a dry-run again before retrying the sync.',
+              );
+            }
+            item.body = finalizedBody.markdown;
             item.assets = processed.assets;
             item.assetStateUpdates = processed.assetStateUpdates;
             // Apply の戻り値は Apply 中の警告だけなので、Plan で保持した警告へ追加する。
