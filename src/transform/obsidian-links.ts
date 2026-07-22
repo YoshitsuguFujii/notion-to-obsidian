@@ -6,19 +6,10 @@ import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkStringify from 'remark-stringify';
 import { DomainError } from '../errors.js';
-
-const compactIdPattern = /^[0-9a-f]{32}$/iu;
-const uuidPattern =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const trailingIdPattern =
-  /([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu;
-
-export function normalizeNotionId(value: string): string | undefined {
-  if (!compactIdPattern.test(value) && !uuidPattern.test(value)) {
-    return undefined;
-  }
-  return value.replaceAll('-', '').toLowerCase();
-}
+import {
+  extractNotionIdFromPathSegment,
+  normalizeNotionId,
+} from '../notion-id.js';
 
 export function extractNotionPageId(value: string): string | undefined {
   let url: URL;
@@ -40,8 +31,7 @@ export function extractNotionPageId(value: string): string | undefined {
   } catch {
     return undefined;
   }
-  const match = trailingIdPattern.exec(decoded);
-  return match?.[1] ? normalizeNotionId(match[1]) : undefined;
+  return extractNotionIdFromPathSegment(decoded);
 }
 
 export function buildIdToPathMap(
