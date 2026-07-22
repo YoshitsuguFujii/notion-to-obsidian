@@ -41,8 +41,8 @@ import type { UnsupportedSidecar } from '../transform/unsupported.js';
 import type { createLogger } from '../logging/index.js';
 import { createDataSourceIndex } from '../transform/data-source-index.js';
 import {
+  convertDataSourceProperties,
   convertDataSourceProperty,
-  resolveRelationProperty,
 } from '../transform/data-source-properties.js';
 import { transformEnhancedMarkdown } from '../transform/enhanced-markdown.js';
 import {
@@ -134,6 +134,7 @@ interface PlannedContent {
   path: PlannedResourcePath;
   body: string;
   bodyReplacedCount: number;
+  frontmatterTitle: string;
   contentHash: string;
   structureHash: string;
   warnings: Array<{ type: string; message: string }>;
@@ -552,19 +553,14 @@ export async function runSyncOrchestrator(
         };
         const stored = existingById.get(resource.notionId);
         const rawProperties = rowProperties.get(resource.notionId);
-        const properties = rawProperties
-          ? Object.fromEntries(
-              Object.entries(rawProperties).map(([name, property]) => [
-                name,
-                property !== null &&
-                typeof property === 'object' &&
-                (property as Record<string, unknown>).type === 'relation'
-                  ? resolveRelationProperty(property, idToPath)
-                  : convertDataSourceProperty(property),
-              ]),
-            )
+        const convertedProperties = rawProperties
+          ? convertDataSourceProperties(rawProperties, idToPath)
           : undefined;
-        const propertyReplacedCount = 0;
+        const properties = convertedProperties?.properties;
+        const finalizedTitle = replaceRetainedSignedUrls(resource.title);
+        const propertyReplacedCount =
+          (convertedProperties?.replacedCount ?? 0) +
+          finalizedTitle.replacedCount;
         const signedUrlReplacedCount =
           bodyReplacedCount + propertyReplacedCount;
         if (signedUrlReplacedCount > 0) {
@@ -631,6 +627,7 @@ export async function runSyncOrchestrator(
           path,
           body,
           bodyReplacedCount,
+          frontmatterTitle: finalizedTitle.markdown,
           contentHash,
           structureHash,
           warnings,
@@ -934,7 +931,7 @@ export async function runSyncOrchestrator(
                 notionObjectType: item.resource.objectType,
                 notionLastEditedTime: item.resource.lastEditedTime,
                 syncedAt: startedAt,
-                title: item.resource.title,
+                title: item.frontmatterTitle,
                 contentHash: item.contentHash,
                 ...(item.properties ? { properties: item.properties } : {}),
               });

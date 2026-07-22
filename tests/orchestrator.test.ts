@@ -779,6 +779,111 @@ describe('runSyncOrchestrator', () => {
     ).toContain('Status: Done');
   });
 
+  it('Data Source行の本文・title・propertiesに残った一時queryを1件の警告へ集約する', async () => {
+    const { store, config, census, lock } = await fixture();
+    const databaseId = '22222222-2222-4222-8222-222222222222';
+    const rowId = '33333333-3333-4333-8333-333333333333';
+    const signedUrl = (name: string) =>
+      `https://file.notion.so/${name}?X-Amz-Signature=temporary-${name}#preview`;
+    const withDatabase: RootCensus = {
+      ...census,
+      resources: [
+        ...census.resources,
+        {
+          notionId: databaseId,
+          objectType: 'database',
+          title: 'Tasks',
+          parentId: rootId,
+          parentType: 'page',
+          rootId,
+          lastEditedTime: '2026-07-12T00:00:00.000Z',
+          inTrash: false,
+          url: `https://www.notion.so/${databaseId}`,
+          dataSourceId: 'source-id',
+        },
+      ],
+    };
+
+    const result = await runSyncOrchestrator(
+      config,
+      { strict: true },
+      {
+        store,
+        lock,
+        census: () => Promise.resolve(withDatabase),
+        fetchDataSourceRows: () =>
+          Promise.resolve([
+            {
+              object: 'page',
+              id: rowId,
+              url: `https://www.notion.so/${rowId}`,
+              last_edited_time: '2026-07-12T00:00:00.000Z',
+              properties: {
+                Name: { type: 'title', title: [{ plain_text: 'First task' }] },
+                Reference: {
+                  type: 'title',
+                  title: [{ plain_text: signedUrl('title') }],
+                },
+                Files: {
+                  type: 'files',
+                  files: [
+                    {
+                      name: 'attachment',
+                      type: 'file',
+                      file: { url: signedUrl('file') },
+                    },
+                  ],
+                },
+                Formula: {
+                  type: 'formula',
+                  formula: {
+                    type: 'array',
+                    array: [
+                      { type: 'file', file: { url: signedUrl('formula') } },
+                    ],
+                  },
+                },
+                Future: {
+                  type: 'future_type',
+                  future_type: { bare: signedUrl('future') },
+                },
+              },
+            },
+          ]),
+        retrieveContent: (notionId) =>
+          Promise.resolve({
+            markdown:
+              notionId === rowId
+                ? `<table>\n![Hidden](${signedUrl('body')})`
+                : '# Body\n',
+            warnings: [],
+            sidecars: [],
+          }),
+        now: () => '2026-07-12T01:00:00.000Z',
+        runId: () => 'run-data-source-signed-url',
+      },
+    );
+
+    const markdown = await readFile(
+      join(config.obsidian.managedPath, 'Notes', 'Tasks', 'First task.md'),
+      'utf8',
+    );
+    expect(markdown).not.toContain('X-Amz-Signature');
+    expect(markdown).not.toContain('#preview');
+    const warnings = result.actions.filter(
+      ({ type, notionId }) => type === 'WARNING' && notionId === rowId,
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.message).toContain('6');
+    expect(store.listWarnings(result.runId)).toEqual([
+      expect.objectContaining({
+        resourceId: rowId,
+        warningType: 'asset_signed_url_replaced',
+      }),
+    ]);
+    expect(result.partialFailure).toBe(true);
+  });
+
   it('assetをdownload・URL rewrite・DB保存し、2回目はcacheで再取得しない', async () => {
     const { store, config, census, lock } = await fixture();
     const blockId = '44444444-4444-4444-8444-444444444444';

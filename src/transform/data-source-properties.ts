@@ -1,8 +1,15 @@
 import { normalizeNotionId } from './obsidian-links.js';
+import { replaceRetainedSignedUrls } from './signed-asset-urls.js';
+import { stableReferenceUrl } from './stable-url.js';
 
 type UnknownRecord = Record<string, unknown>;
 
 export type DataSourcePropertyValue = unknown;
+
+interface ConvertedValue {
+  value: unknown;
+  replacedCount: number;
+}
 
 function record(value: unknown): UnknownRecord | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -91,6 +98,138 @@ function relation(value: unknown): Array<{ id: string }> {
 
 function fallback(type: string, raw: unknown): unknown {
   return { type, raw };
+}
+
+function cloneValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneValue);
+  const item = record(value);
+  if (!item) return value;
+  return Object.fromEntries(
+    Object.entries(item).map(([key, entry]) => [key, cloneValue(entry)]),
+  );
+}
+
+function replaceSignedUrlText(value: string): ConvertedValue {
+  const replaced = replaceRetainedSignedUrls(value);
+  return { value: replaced.markdown, replacedCount: replaced.replacedCount };
+}
+
+function stabilizeRawValue(value: unknown): ConvertedValue {
+  if (typeof value === 'string') return replaceSignedUrlText(value);
+  if (Array.isArray(value)) {
+    const entries = value.map(stabilizeRawValue);
+    return {
+      value: entries.map((entry) => entry.value),
+      replacedCount: entries.reduce(
+        (count, entry) => count + entry.replacedCount,
+        0,
+      ),
+    };
+  }
+  const item = record(value);
+  if (!item) return { value, replacedCount: 0 };
+
+  const external = record(item.external);
+  if (item.type === 'external' && typeof external?.url === 'string') {
+    return { value: cloneValue(item), replacedCount: 0 };
+  }
+
+  const notionFile = record(item.file);
+  if (item.type === 'file' && typeof notionFile?.url === 'string') {
+    let replacedCount = 0;
+    const stabilized = Object.fromEntries(
+      Object.entries(item).map(([key, entry]) => {
+        if (key !== 'file') {
+          const transformed = stabilizeRawValue(entry);
+          replacedCount += transformed.replacedCount;
+          return [key, transformed.value];
+        }
+        const fileFields = Object.fromEntries(
+          Object.entries(notionFile).map(([fileKey, fileValue]) => {
+            if (fileKey !== 'url') {
+              const transformed = stabilizeRawValue(fileValue);
+              replacedCount += transformed.replacedCount;
+              return [fileKey, transformed.value];
+            }
+            const stableUrl = stableReferenceUrl(
+              notionFile.url as string,
+              'notion',
+            );
+            if (stableUrl !== notionFile.url) replacedCount += 1;
+            return [fileKey, stableUrl];
+          }),
+        );
+        return [key, fileFields];
+      }),
+    );
+    return { value: stabilized, replacedCount };
+  }
+
+  let replacedCount = 0;
+  const stabilized = Object.fromEntries(
+    Object.entries(item).map(([key, entry]) => {
+      const transformed = stabilizeRawValue(entry);
+      replacedCount += transformed.replacedCount;
+      return [key, transformed.value];
+    }),
+  );
+  return { value: stabilized, replacedCount };
+}
+
+function convertFiles(property: UnknownRecord): ConvertedValue {
+  if (!Array.isArray(property.files)) {
+    return stabilizeRawValue(fallback('files', property));
+  }
+  const files: Array<{ name: string; url: string }> = [];
+  let replacedCount = 0;
+  for (const entry of property.files) {
+    const item = record(entry);
+    if (!item || typeof item.name !== 'string' || typeof item.type !== 'string')
+      continue;
+    const source = record(item[item.type]);
+    if (typeof source?.url !== 'string') continue;
+    if (item.type === 'external') {
+      files.push({ name: item.name, url: source.url });
+      continue;
+    }
+    const name = replaceSignedUrlText(item.name);
+    const stableNotionUrl =
+      item.type === 'file'
+        ? stableReferenceUrl(source.url, 'notion')
+        : undefined;
+    const stabilizedUrl =
+      stableNotionUrl === undefined
+        ? replaceSignedUrlText(source.url)
+        : {
+            value: stableNotionUrl,
+            replacedCount: stableNotionUrl === source.url ? 0 : 1,
+          };
+    replacedCount += name.replacedCount;
+    replacedCount += stabilizedUrl.replacedCount;
+    files.push({
+      name: name.value as string,
+      url: stabilizedUrl.value as string,
+    });
+  }
+  return { value: files, replacedCount };
+}
+
+function convertDataSourcePropertyResult(property: unknown): ConvertedValue {
+  const item = record(property);
+  const type = item?.type;
+  if (!item || typeof type !== 'string') {
+    return stabilizeRawValue(fallback('unknown', property));
+  }
+  if (type === 'files') return convertFiles(item);
+  if (type === 'formula' || type === 'rollup') {
+    const value = stabilizeRawValue(typedValue(item[type]));
+    const raw = stabilizeRawValue(item[type]);
+    return {
+      value: { value: value.value, raw: raw.value },
+      replacedCount: value.replacedCount + raw.replacedCount,
+    };
+  }
+  return stabilizeRawValue(convertDataSourceProperty(property));
 }
 
 export function convertDataSourceProperty(
@@ -220,4 +359,26 @@ export function resolveRelationProperty(
     raw,
     ...(typeof item?.has_more === 'boolean' ? { hasMore: item.has_more } : {}),
   };
+}
+
+export function convertDataSourceProperties(
+  properties: Readonly<Record<string, unknown>>,
+  idToPath: ReadonlyMap<string, string>,
+): {
+  properties: Record<string, unknown>;
+  replacedCount: number;
+} {
+  let replacedCount = 0;
+  const converted = Object.fromEntries(
+    Object.entries(properties).map(([name, property]) => {
+      const item = record(property);
+      const result =
+        item?.type === 'relation'
+          ? stabilizeRawValue(resolveRelationProperty(property, idToPath))
+          : convertDataSourcePropertyResult(property);
+      replacedCount += result.replacedCount;
+      return [name, result.value];
+    }),
+  );
+  return { properties: converted, replacedCount };
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  convertDataSourceProperties,
   convertDataSourceProperty,
   resolveRelationProperty,
 } from '../src/transform/data-source-properties.js';
@@ -203,6 +204,149 @@ describe('convertDataSourceProperty', () => {
         ],
         function: 'show_original',
       },
+    });
+  });
+});
+
+describe('convertDataSourceProperties', () => {
+  const signedUrl =
+    'https://file.notion.so/report.pdf?X-Amz-Signature=temporary#preview';
+  const stableUrl = 'https://file.notion.so/report.pdf';
+
+  it('file由来のURLだけをhostに依存せず安定化しexternal由来のsubtreeを維持する', () => {
+    const externalUrl =
+      'https://file.notion.so/external.pdf?X-Amz-Signature=keep';
+    const properties = {
+      Files: {
+        type: 'files',
+        files: [
+          {
+            name: 'Notion file',
+            type: 'file',
+            file: {
+              url: 'https://cdn.example.test/file.pdf?token=temporary#page',
+            },
+          },
+          {
+            name: signedUrl,
+            type: 'external',
+            external: { url: externalUrl, caption: signedUrl },
+          },
+        ],
+      },
+    };
+    const original = structuredClone(properties);
+
+    const result = convertDataSourceProperties(properties, new Map());
+
+    expect(result).toEqual({
+      properties: {
+        Files: [
+          { name: 'Notion file', url: 'https://cdn.example.test/file.pdf' },
+          { name: signedUrl, url: externalUrl },
+        ],
+      },
+      replacedCount: 1,
+    });
+    expect(properties).toEqual(original);
+  });
+
+  it('formulaとrollupでvalueとrawへ複製されるfile URLを最終出力の出現数として数える', () => {
+    const externalProtectedUrl =
+      'https://file.notion.so/external.pdf?X-Amz-Signature=keep';
+    const file = {
+      type: 'file',
+      file: { url: signedUrl, expiry_time: '2026-07-22T00:00:00.000Z' },
+      preserved: true,
+    };
+    const external = {
+      type: 'external',
+      external: {
+        url: externalProtectedUrl,
+        nested: { example: externalProtectedUrl },
+      },
+    };
+    const properties = {
+      Formula: {
+        type: 'formula',
+        formula: { type: 'array', array: [file, external] },
+      },
+      Rollup: {
+        type: 'rollup',
+        rollup: { type: 'array', array: [file, external] },
+      },
+    };
+
+    const result = convertDataSourceProperties(properties, new Map());
+
+    expect(JSON.stringify(result.properties)).not.toContain(
+      'X-Amz-Signature=temporary#preview',
+    );
+    expect(JSON.stringify(result.properties)).toContain(externalProtectedUrl);
+    expect(result.replacedCount).toBe(4);
+    expect(
+      (result.properties.Formula as { raw: { array: unknown[] } }).raw.array[0],
+    ).toEqual({
+      type: 'file',
+      file: {
+        url: stableUrl,
+        expiry_time: '2026-07-22T00:00:00.000Z',
+      },
+      preserved: true,
+    });
+  });
+
+  it('未知shapeのrawにあるfileと署名文字列を安定化し外部URLと他フィールドを保全する', () => {
+    const property = {
+      type: 'future_type',
+      future_type: {
+        file: { type: 'file', file: { url: signedUrl }, color: 'blue' },
+        external: {
+          type: 'external',
+          external: { url: signedUrl, nested: signedUrl },
+        },
+        bare: signedUrl,
+        ordinary: 'https://example.com/a?Signature=keep',
+      },
+    };
+
+    const result = convertDataSourceProperties({ Future: property }, new Map());
+
+    expect(result.replacedCount).toBe(2);
+    expect(result.properties).toEqual({
+      Future: {
+        type: 'future_type',
+        raw: {
+          type: 'future_type',
+          future_type: {
+            file: {
+              type: 'file',
+              file: { url: stableUrl },
+              color: 'blue',
+            },
+            external: property.future_type.external,
+            bare: stableUrl,
+            ordinary: 'https://example.com/a?Signature=keep',
+          },
+        },
+      },
+    });
+  });
+
+  it('titleに残った署名URLを安定化する', () => {
+    const result = convertDataSourceProperties(
+      {
+        Name: {
+          type: 'title',
+          title: [{ plain_text: `Reference ${signedUrl}` }],
+        },
+      },
+      new Map(),
+    );
+
+    expect(result).toEqual({
+      properties: { Name: `Reference ${stableUrl}` },
+      replacedCount: 1,
     });
   });
 });
