@@ -948,6 +948,13 @@ describe('runSyncOrchestrator', () => {
                       type: 'file',
                       file: { url: signedUrl('file') },
                     },
+                    {
+                      name: signedUrl('external-name'),
+                      type: 'external',
+                      external: {
+                        url: 'https://example.com/file?download=1',
+                      },
+                    },
                   ],
                 },
                 Formula: {
@@ -986,11 +993,12 @@ describe('runSyncOrchestrator', () => {
     );
     expect(markdown).not.toContain('X-Amz-Signature');
     expect(markdown).not.toContain('#preview');
+    expect(markdown).toContain('https://example.com/file?download=1');
     const warnings = result.actions.filter(
       ({ type, notionId }) => type === 'WARNING' && notionId === rowId,
     );
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]?.message).toContain('6');
+    expect(warnings[0]?.message).toContain('7');
     expect(store.listWarnings(result.runId)).toEqual([
       expect.objectContaining({
         resourceId: rowId,

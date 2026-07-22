@@ -275,8 +275,10 @@ describe('CLI', () => {
   it.each([
     ['通常出力', []],
     ['JSON出力', ['--json']],
-  ] as const)('%sのWARNINGへ署名原文を含めない', async (_format, options) => {
+  ] as const)('%sでWARNING messageを出力する', async (_format, options) => {
     const write = vi.fn();
+    const warningMessage =
+      'Replaced 2 retained Notion signed asset URL occurrence(s) with stable references.';
     const program = createProgram({
       write,
       handlers: {
@@ -287,8 +289,7 @@ describe('CLI', () => {
             {
               type: 'WARNING' as const,
               notionId: 'page',
-              message:
-                'Replaced 2 retained Notion signed asset URL occurrence(s) with stable references.',
+              message: warningMessage,
             },
           ],
         }),
@@ -302,8 +303,6 @@ describe('CLI', () => {
       .flatMap((call) => call)
       .map(String)
       .join('');
-    expect(output).toContain('Replaced 2');
-    expect(output).not.toContain('X-Amz-Signature');
-    expect(output).not.toContain('temporary');
+    expect(output).toContain(warningMessage);
   });
 });

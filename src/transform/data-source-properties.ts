@@ -100,15 +100,6 @@ function fallback(type: string, raw: unknown): unknown {
   return { type, raw };
 }
 
-function cloneValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(cloneValue);
-  const item = record(value);
-  if (!item) return value;
-  return Object.fromEntries(
-    Object.entries(item).map(([key, entry]) => [key, cloneValue(entry)]),
-  );
-}
-
 function replaceSignedUrlText(value: string): ConvertedValue {
   const replaced = replaceRetainedSignedUrls(value);
   return { value: replaced.markdown, replacedCount: replaced.replacedCount };
@@ -131,7 +122,26 @@ function stabilizeRawValue(value: unknown): ConvertedValue {
 
   const external = record(item.external);
   if (item.type === 'external' && typeof external?.url === 'string') {
-    return { value: cloneValue(item), replacedCount: 0 };
+    let replacedCount = 0;
+    const stabilized = Object.fromEntries(
+      Object.entries(item).map(([key, entry]) => {
+        if (key !== 'external') {
+          const transformed = stabilizeRawValue(entry);
+          replacedCount += transformed.replacedCount;
+          return [key, transformed.value];
+        }
+        const externalFields = Object.fromEntries(
+          Object.entries(external).map(([externalKey, externalValue]) => {
+            if (externalKey === 'url') return [externalKey, externalValue];
+            const transformed = stabilizeRawValue(externalValue);
+            replacedCount += transformed.replacedCount;
+            return [externalKey, transformed.value];
+          }),
+        );
+        return [key, externalFields];
+      }),
+    );
+    return { value: stabilized, replacedCount };
   }
 
   const notionFile = record(item.file);
@@ -189,7 +199,9 @@ function convertFiles(property: UnknownRecord): ConvertedValue {
     const source = record(item[item.type]);
     if (typeof source?.url !== 'string') continue;
     if (item.type === 'external') {
-      files.push({ name: item.name, url: source.url });
+      const name = replaceSignedUrlText(item.name);
+      replacedCount += name.replacedCount;
+      files.push({ name: name.value as string, url: source.url });
       continue;
     }
     const name = replaceSignedUrlText(item.name);

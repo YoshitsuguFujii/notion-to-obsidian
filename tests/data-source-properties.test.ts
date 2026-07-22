@@ -213,7 +213,7 @@ describe('convertDataSourceProperties', () => {
     'https://file.notion.so/report.pdf?X-Amz-Signature=temporary#preview';
   const stableUrl = 'https://file.notion.so/report.pdf';
 
-  it('file由来のURLだけをhostに依存せず安定化しexternal由来のsubtreeを維持する', () => {
+  it('file URLと表示文字列を安定化しexternal.urlだけを維持する', () => {
     const externalUrl =
       'https://file.notion.so/external.pdf?X-Amz-Signature=keep';
     const properties = {
@@ -243,10 +243,10 @@ describe('convertDataSourceProperties', () => {
       properties: {
         Files: [
           { name: 'Notion file', url: 'https://cdn.example.test/file.pdf' },
-          { name: signedUrl, url: externalUrl },
+          { name: stableUrl, url: externalUrl },
         ],
       },
-      replacedCount: 1,
+      replacedCount: 2,
     });
     expect(properties).toEqual(original);
   });
@@ -283,7 +283,7 @@ describe('convertDataSourceProperties', () => {
       'X-Amz-Signature=temporary#preview',
     );
     expect(JSON.stringify(result.properties)).toContain(externalProtectedUrl);
-    expect(result.replacedCount).toBe(4);
+    expect(result.replacedCount).toBe(8);
     expect(
       (result.properties.Formula as { raw: { array: unknown[] } }).raw.array[0],
     ).toEqual({
@@ -294,16 +294,28 @@ describe('convertDataSourceProperties', () => {
       },
       preserved: true,
     });
+    expect(
+      (
+        (result.properties.Formula as { raw: { array: unknown[] } }).raw
+          .array[1] as {
+          external: { url: string; nested: { example: string } };
+        }
+      ).external,
+    ).toEqual({
+      url: externalProtectedUrl,
+      nested: { example: 'https://file.notion.so/external.pdf' },
+    });
   });
 
-  it('未知shapeのrawにあるfileと署名文字列を安定化し外部URLと他フィールドを保全する', () => {
+  it('未知shapeのrawでexternal.urlを維持しその他の署名文字列を安定化する', () => {
     const property = {
       type: 'future_type',
       future_type: {
         file: { type: 'file', file: { url: signedUrl }, color: 'blue' },
         external: {
           type: 'external',
-          external: { url: signedUrl, nested: signedUrl },
+          name: signedUrl,
+          external: { url: signedUrl, caption: signedUrl },
         },
         bare: signedUrl,
         ordinary: 'https://example.com/a?Signature=keep',
@@ -312,7 +324,7 @@ describe('convertDataSourceProperties', () => {
 
     const result = convertDataSourceProperties({ Future: property }, new Map());
 
-    expect(result.replacedCount).toBe(2);
+    expect(result.replacedCount).toBe(4);
     expect(result.properties).toEqual({
       Future: {
         type: 'future_type',
@@ -324,7 +336,11 @@ describe('convertDataSourceProperties', () => {
               file: { url: stableUrl },
               color: 'blue',
             },
-            external: property.future_type.external,
+            external: {
+              type: 'external',
+              name: stableUrl,
+              external: { url: signedUrl, caption: stableUrl },
+            },
             bare: stableUrl,
             ordinary: 'https://example.com/a?Signature=keep',
           },
