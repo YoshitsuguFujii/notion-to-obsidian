@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { reconcileCrash } from '../src/sync/reconcile-crash.js';
 import { SqliteStateStore } from '../src/storage/sqlite-store.js';
 
-const notionId = '11111111-1111-4111-8111-111111111111';
+const notionId = '11111111-1111-8111-9111-111111111111';
 const roots: string[] = [];
 const stores: SqliteStateStore[] = [];
 

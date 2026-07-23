@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { trashManagedFile } from '../src/filesystem/trash.js';
 
-const notionId = '11111111-1111-4111-8111-111111111111';
+const notionId = '11111111-1111-8111-b111-111111111111';
 const markdown = `---\nmanaged_by: notion-to-obsidian\nnotion_id: ${notionId}\n---\nBody\n`;
 const directories: string[] = [];
 

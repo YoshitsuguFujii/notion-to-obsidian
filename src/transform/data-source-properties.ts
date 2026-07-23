@@ -1,4 +1,4 @@
-import { normalizeNotionId } from './obsidian-links.js';
+import { normalizeNotionId } from '../notion-id.js';
 import { replaceRetainedSignedUrls } from './signed-asset-urls.js';
 import { stableReferenceUrl } from './stable-url.js';
 

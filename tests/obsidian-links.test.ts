@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  extractNotionIdFromPathSegment,
+  normalizeNotionId,
+} from '../src/notion-id.js';
+import {
   buildIdToPathMap,
   extractNotionPageId,
-  normalizeNotionId,
   resolveInternalLinks,
 } from '../src/transform/obsidian-links.js';
 
@@ -23,6 +26,25 @@ describe('Notion page identity', () => {
     'gggggggggggggggggggggggggggggggg',
   ])('不正なID %sを拒否する', (input) => {
     expect(normalizeNotionId(input)).toBeUndefined();
+  });
+
+  it.each([
+    [
+      'Project-Notes-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    ],
+    [
+      'cccccccc-cccc-cccc-cccc-cccccccccccc',
+      'cccccccccccccccccccccccccccccccc',
+    ],
+  ])('path segment %s の末尾から比較用IDを抽出する', (input, expected) => {
+    expect(extractNotionIdFromPathSegment(input)).toBe(expected);
+  });
+
+  it('有効なIDで終わらないpath segmentを拒否する', () => {
+    expect(
+      extractNotionIdFromPathSegment('Project-Notes-not-an-id'),
+    ).toBeUndefined();
   });
 
   it.each([

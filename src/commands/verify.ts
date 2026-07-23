@@ -33,7 +33,7 @@ export async function runVerifyCommand(options: {
     });
   }
   using store = new SqliteStateStore(config.state.databasePath);
-  return runVerify({ managedRoot: config.obsidian.managedPath, store });
+  return await runVerify({ managedRoot: config.obsidian.managedPath, store });
 }
 
 export async function runVerify(options: VerifyOptions) {

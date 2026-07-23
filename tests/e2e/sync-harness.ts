@@ -20,7 +20,7 @@ import {
   type SyncOptions,
 } from '../../src/sync/orchestrator.js';
 
-export const ROOT_ID = '11111111-1111-4111-8111-111111111111';
+export const ROOT_ID = '11111111-1111-8111-9111-111111111111';
 export const ROOT_B_ID = '66666666-6666-4666-8666-666666666666';
 export const PARENT_A_ID = '22222222-2222-4222-8222-222222222222';
 export const PARENT_B_ID = '33333333-3333-4333-8333-333333333333';
