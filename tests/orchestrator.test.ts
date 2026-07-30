@@ -269,7 +269,7 @@ describe('runSyncOrchestrator', () => {
       census: () => Promise.resolve(context.census),
       retrieveContent: () =>
         Promise.resolve({
-          markdown: `<table>\n${signedUrl}\n${signedUrl}`,
+          markdown: `<table>\n![a](${signedUrl})\n![b](${signedUrl})`,
           warnings: [],
           sidecars: [],
         }),
@@ -307,11 +307,11 @@ describe('runSyncOrchestrator', () => {
     expect(context.store.listWarnings(applied.runId)).toHaveLength(1);
   });
 
-  it('frontmatterのtitleに残った一時queryを安定化する', async () => {
+  it('値全体がURLのtitleに残った一時queryをfrontmatterで安定化する', async () => {
     const context = await fixture();
     const childId = '22222222-2222-4222-8222-222222222222';
     const signedUrl =
-      'https://file.notion.so/title?X-Amz-Signature=temporary#preview（保留）';
+      'https://file.notion.so/title?X-Amz-Signature=temporary#preview';
     const census: RootCensus = {
       ...context.census,
       resources: [
@@ -319,7 +319,7 @@ describe('runSyncOrchestrator', () => {
         {
           notionId: childId,
           objectType: 'page',
-          title: `Reference ${signedUrl}`,
+          title: signedUrl,
           parentId: rootId,
           parentType: 'page',
           rootId,
@@ -350,14 +350,12 @@ describe('runSyncOrchestrator', () => {
       join(context.config.obsidian.managedPath, localPath),
       'utf8',
     );
-    expect(markdown).toContain(
-      'title: Reference https://file.notion.so/title（保留）',
-    );
+    expect(markdown).toContain('title: https://file.notion.so/title');
     expect(markdown).not.toContain('X-Amz-Signature');
     expect(markdown).not.toContain('#preview');
     expect(localPath).not.toContain('temporary');
     expect(context.store.getResource(childId)?.title).toBe(
-      'Reference https://file.notion.so/title（保留）',
+      'https://file.notion.so/title',
     );
     expect(JSON.stringify(result.actions)).not.toContain('temporary');
     expect(
@@ -367,12 +365,12 @@ describe('runSyncOrchestrator', () => {
     ).toHaveLength(1);
   });
 
-  it('境界を証明できない親titleがあるpage-id同期を安全停止する', async () => {
+  it('範囲を確定できない親titleがあるpage-id同期を安全停止する', async () => {
     const context = await fixture();
     const parentId = '22222222-2222-4222-8222-222222222222';
     const childId = '33333333-3333-4333-8333-333333333333';
     const retained =
-      'https://file.notion.so/title?X-Amz-Signature=temporary#preview';
+      'Reference https://file.notion.so/title?X-Amz-Signature=temporary#preview（保留）';
     const census: RootCensus = {
       ...context.census,
       resources: [
@@ -958,7 +956,7 @@ describe('runSyncOrchestrator', () => {
     ).toContain('Status: Done');
   });
 
-  it('Data Sourceの表示値に残った境界未確定URLを安全停止する', async () => {
+  it('Data Sourceの表示値に残った範囲未確定URLを安全停止する', async () => {
     const { store, config, census, lock } = await fixture();
     const databaseId = '22222222-2222-4222-8222-222222222222';
     const rowId = '33333333-3333-4333-8333-333333333333';
@@ -1004,7 +1002,7 @@ describe('runSyncOrchestrator', () => {
                 },
                 Reference: {
                   type: 'title',
-                  title: [{ plain_text: signedUrl('title') }],
+                  title: [{ plain_text: `参照 ${signedUrl('title')} です` }],
                 },
                 Files: {
                   type: 'files',

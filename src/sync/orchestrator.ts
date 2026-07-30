@@ -65,7 +65,7 @@ import {
 
 const API_VERSION = '2026-03-11';
 const TOOL_VERSION = '0.1.0';
-const TRANSFORM_VERSION = '4';
+const TRANSFORM_VERSION = '5';
 function signedUrlSafetyMessage(notionIds: ReadonlySet<string>): string {
   return `Cannot safely process retained Notion signed asset URLs on page ID(s): ${[...notionIds].sort().join(', ')}. One or more URLs could not be parsed or their boundary is ambiguous in Notion content. In Notion, correct the URL or separate text adjacent to it, then run sync --dry-run to verify the correction before syncing.`;
 }

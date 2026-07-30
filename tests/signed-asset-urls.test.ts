@@ -51,10 +51,10 @@ describe('replaceRetainedSignedUrls', () => {
   it('scheme・host・query keyの大文字小文字を区別せず変換する', () => {
     expect(
       replaceRetainedSignedUrls(
-        'HTTPS://FILE.NOTION.SO/file.png?x-amz-signature=value ',
+        '![asset](HTTPS://FILE.NOTION.SO/file.png?x-amz-signature=value)',
       ),
     ).toEqual({
-      markdown: 'https://file.notion.so/file.png ',
+      markdown: '![asset](https://file.notion.so/file.png)',
       replacedCount: 1,
       ...noUnsafeUrls,
     });
@@ -63,10 +63,10 @@ describe('replaceRetainedSignedUrls', () => {
   it('標準portを持つURLを通常のhttps URLとして扱う', () => {
     expect(
       replaceRetainedSignedUrls(
-        'https://file.notion.so:443/file.png?Signature=value ',
+        '![asset](https://file.notion.so:443/file.png?Signature=value)',
       ),
     ).toEqual({
-      markdown: 'https://file.notion.so/file.png ',
+      markdown: '![asset](https://file.notion.so/file.png)',
       replacedCount: 1,
       ...noUnsafeUrls,
     });
@@ -74,9 +74,9 @@ describe('replaceRetainedSignedUrls', () => {
 
   it('percent encodeされた署名keyと重複keyを検出する', () => {
     const input =
-      'https://file.notion.so/file.png?ignored=1&%58-Amz-Signature=&X-Amz-Signature=second ';
+      '![asset](https://file.notion.so/file.png?ignored=1&%58-Amz-Signature=&X-Amz-Signature=second)';
     expect(replaceRetainedSignedUrls(input)).toEqual({
-      markdown: 'https://file.notion.so/file.png ',
+      markdown: '![asset](https://file.notion.so/file.png)',
       replacedCount: 1,
       ...noUnsafeUrls,
     });
@@ -116,32 +116,54 @@ describe('replaceRetainedSignedUrls', () => {
     });
   });
 
-  it('MarkdownとHTMLのdelimiterを維持する', () => {
+  it('構文で範囲が確定するMarkdownとHTMLのdelimiterを維持する', () => {
     const input = [
       `![image](${signed})`,
-      `Sentence ${signed}. `,
+      `[link](<${signed}>)`,
       `<${signed}>`,
       `<img src='${signed}'>`,
+      `<img src="${signed}">`,
     ].join('\n');
     expect(replaceRetainedSignedUrls(input)).toEqual({
       markdown: [
         `![image](${stable})`,
-        `Sentence ${stable}. `,
+        `[link](<${stable}>)`,
         `<${stable}>`,
         `<img src='${stable}'>`,
+        `<img src="${stable}">`,
       ].join('\n'),
-      replacedCount: 4,
+      replacedCount: 5,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it('destinationのtitleを残してURLだけを変換する', () => {
+    expect(
+      replaceRetainedSignedUrls(`![image](${signed} "caption")\n`),
+    ).toEqual({
+      markdown: `![image](${stable} "caption")\n`,
+      replacedCount: 1,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it('入力全体がURLのみの値を変換する', () => {
+    expect(replaceRetainedSignedUrls(signed)).toEqual({
+      markdown: stable,
+      replacedCount: 1,
       ...noUnsafeUrls,
     });
   });
 
   it.each(['.', ',', ';', ':', '!', '?'])(
-    '文末記号 %s を証明済み境界の前でURLの外側に維持する',
+    '文末記号 %s が続く裸URLは範囲を確定できず停止する',
     (punctuation) => {
-      expect(replaceRetainedSignedUrls(`${signed}${punctuation} `)).toEqual({
-        markdown: `${stable}${punctuation} `,
-        replacedCount: 1,
-        ...noUnsafeUrls,
+      const input = `${signed}${punctuation} `;
+      expect(replaceRetainedSignedUrls(input)).toEqual({
+        markdown: input,
+        replacedCount: 0,
+        boundaryUndeterminedCount: 1,
+        unparseableSignedUrlCount: 0,
       });
     },
   );
@@ -179,7 +201,7 @@ describe('replaceRetainedSignedUrls', () => {
     });
   });
 
-  it('コードフェンス・inline code・HTML block内も安定参照へ変換する', () => {
+  it('コードフェンス内のdestinationは変換し裸URLは停止させる', () => {
     const input = [
       '```md',
       signed,
@@ -189,57 +211,106 @@ describe('replaceRetainedSignedUrls', () => {
       '',
       '<table>',
       `![image](${signed})`,
+      '',
     ].join('\n');
     expect(replaceRetainedSignedUrls(input)).toEqual({
       markdown: [
         '```md',
-        stable,
+        signed,
         '```',
         '',
-        `\`${stable}\``,
+        `\`${signed}\``,
         '',
         '<table>',
         `![image](${stable})`,
+        '',
       ].join('\n'),
-      replacedCount: 3,
+      replacedCount: 1,
+      boundaryUndeterminedCount: 2,
+      unparseableSignedUrlCount: 0,
+    });
+  });
+
+  it.each([
+    '、後ろ',
+    '。後ろ',
+    'です',
+    '（後ろ）',
+    '(note)',
+    '(補足)',
+    '**bold**',
+    '_italic_',
+    'next',
+    '-next',
+    '}',
+  ])('本文が密着する裸URLは置換せず停止する: %s', (trailing) => {
+    const input = `前段 ${signed}${trailing} 後段\n`;
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: input,
+      replacedCount: 0,
+      boundaryUndeterminedCount: 1,
+      unparseableSignedUrlCount: 0,
+    });
+  });
+
+  it('リンクテキストに置かれた裸URLは停止させる', () => {
+    const input = `[${signed}](https://example.com)\n`;
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: input,
+      replacedCount: 0,
+      boundaryUndeterminedCount: 1,
+      unparseableSignedUrlCount: 0,
+    });
+  });
+
+  it('destinationに置かれた非ASCII pathの署名URLを変換する', () => {
+    const input = '![image](https://file.notion.so/画像.png?Signature=value)\n';
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: '![image](https://file.notion.so/%E7%94%BB%E5%83%8F.png)\n',
+      replacedCount: 1,
       ...noUnsafeUrls,
     });
   });
 
-  it('日本語とMarkdownの境界に続く本文を保持する', () => {
-    const cases = [
-      [`${signed}、後ろ`, `${stable}、後ろ`],
-      [`${signed}。後ろ`, `${stable}。後ろ`],
-      [`${signed}です`, `${stable}です`],
-      [`[${signed}](https://example.com)`, `[${stable}](https://example.com)`],
-      [`{${signed}}`, `{${stable}}`],
-      [`${signed}（後ろ）`, `${stable}（後ろ）`],
-    ];
-    for (const [input, expected] of cases) {
-      expect(replaceRetainedSignedUrls(input!)).toEqual({
-        markdown: expected,
-        replacedCount: 1,
-        ...noUnsafeUrls,
-      });
-    }
+  it('裸の非ASCII pathの署名URLを見逃さず停止させる', () => {
+    const input = '前段 https://file.notion.so/画像.png?Signature=value です\n';
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: input,
+      replacedCount: 0,
+      boundaryUndeterminedCount: 1,
+      unparseableSignedUrlCount: 0,
+    });
   });
 
-  it('空白で区切られた複数URLを個別に変換する', () => {
+  it('空白で区切られた複数の裸URLをそれぞれ停止対象に数える', () => {
     const another = 'https://cdn.notion-static.com/another.pdf?Expires=123';
     const input = `${signed} ${another} `;
     expect(replaceRetainedSignedUrls(input)).toEqual({
-      markdown: `${stable} https://cdn.notion-static.com/another.pdf `,
-      replacedCount: 2,
-      ...noUnsafeUrls,
+      markdown: input,
+      replacedCount: 0,
+      boundaryUndeterminedCount: 2,
+      unparseableSignedUrlCount: 0,
     });
   });
 
   it('同一URLと異なるURLを出現単位で数える', () => {
     const another = 'https://cdn.notion-static.com/another.pdf?Expires=123';
-    const input = `${signed}\n${signed}\n${another}\nhttps://example.com/?signature=keep`;
+    const input = [
+      `![a](${signed})`,
+      `![b](${signed})`,
+      `![c](${another})`,
+      '![d](https://example.com/?signature=keep)',
+      '',
+    ].join('\n');
 
     expect(replaceRetainedSignedUrls(input)).toEqual({
-      markdown: `${stable}\n${stable}\nhttps://cdn.notion-static.com/another.pdf\nhttps://example.com/?signature=keep`,
+      markdown: [
+        `![a](${stable})`,
+        `![b](${stable})`,
+        '![c](https://cdn.notion-static.com/another.pdf)',
+        '![d](https://example.com/?signature=keep)',
+        '',
+      ].join('\n'),
       replacedCount: 3,
       ...noUnsafeUrls,
     });
@@ -261,8 +332,7 @@ describe('replaceRetainedSignedUrls', () => {
     `${signed}&next `,
     `${signed}&redirect=https://example.com `,
     `${signed};https://example.com `,
-    signed,
-  ])('本文との境界を証明できないNotion URLは変更しない: %s', (input) => {
+  ])('構文で範囲を確定できないNotion URLは変更しない: %s', (input) => {
     expect(replaceRetainedSignedUrls(input)).toEqual({
       markdown: input,
       replacedCount: 0,
@@ -308,6 +378,30 @@ describe('replaceRetainedSignedUrls', () => {
       replacedCount: 0,
       ...noUnsafeUrls,
     });
+  });
+
+  it('destinationを囲む前後の本文をbyte-for-byteで維持する', () => {
+    // 置換 span の外側が入力と一致することを、周辺文字列を変えながら固定する。
+    // 乱数は再現可能にするため線形合同法で自前生成する。
+    // scheme を偶然作らないよう、周辺文字列には英字を混ぜない。
+    const characters = [...'()[]{}<>*_`"\'=#?&,.;:!-\\/ \n\tあ、。（）【】'];
+    let seed = 20260731;
+    const nextCharacter = (): string => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return characters[seed % characters.length]!;
+    };
+    const randomText = (length: number): string =>
+      Array.from({ length }, nextCharacter).join('');
+
+    for (let iteration = 0; iteration < 200; iteration += 1) {
+      const prefix = randomText(iteration % 17);
+      const suffix = randomText(iteration % 13);
+      const result = replaceRetainedSignedUrls(
+        `${prefix}![image](${signed})${suffix}`,
+      );
+
+      expect(result.markdown).toBe(`${prefix}![image](${stable})${suffix}`);
+    }
   });
 
   it('同じ変換を繰り返しても本文を変更しない', () => {
