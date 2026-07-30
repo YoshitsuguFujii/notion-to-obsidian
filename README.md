@@ -157,7 +157,7 @@ node --env-file=.env dist/cli/index.js sync --config config.yaml --full
 
 新規導入時や通常運用で`--full`を常用する必要はありません。transform versionは同期runのprovenanceとして記録されますが、保存済みページの移行済み判定には使われないため、versionの変化だけでは既存Markdownの再生成完了を判断できません。
 
-1. `sync --full --dry-run --strict`を実行し、UPDATE範囲を確認します。v1から移行する場合は、`asset_signed_url_replaced`のWARNINGも確認します。署名付きURLの検出WARNINGによる非0終了が想定されるのはv1からの移行時です。安全エラーやpartial censusによる非0終了とは区別し、後者がある場合は実同期へ進まず原因を解消してください。署名付きURLの終端を安全に判断できない旨の安全エラーが出た場合も、本文を確認してから再実行してください。
+1. `sync --full --dry-run --strict`を実行し、UPDATE範囲を確認します。v1から移行する場合は、`asset_signed_url_replaced`のWARNINGも確認します。署名付きURLの検出WARNINGによる非0終了が想定されるのはv1からの移行時です。安全エラーやpartial censusによる非0終了とは区別し、後者がある場合は実同期へ進まず原因を解消してください。署名付きURLの終端を安全に判断できない安全エラーには該当ページIDが表示されます。Notion上でURLに密着した本文を分離または修正し、`sync --full --dry-run --strict`で解消を確認してから実同期してください。
 2. Vaultとstate DBを対でバックアップします。
 3. `sync --full`を実行します。失敗または中断した場合は移行済みと判断せず、同じコマンドを再実行してください。
 4. 通常の`sync`を実行し、対象ページがUNCHANGEDになることを確認します。

@@ -401,25 +401,25 @@ describe('runSyncOrchestrator', () => {
       ],
     };
 
-    await expect(
-      runSyncOrchestrator(
-        context.config,
-        { pageId: childId },
-        {
-          store: context.store,
-          lock: context.lock,
-          census: () => Promise.resolve(census),
-          retrieveContent: () =>
-            Promise.resolve({
-              markdown: '# Body\n',
-              warnings: [],
-              sidecars: [],
-            }),
-          now: () => '2026-07-12T01:00:00.000Z',
-          runId: () => 'run-unsafe-title',
-        },
-      ),
-    ).rejects.toMatchObject({ category: 'safety' });
+    const sync = runSyncOrchestrator(
+      context.config,
+      { pageId: childId },
+      {
+        store: context.store,
+        lock: context.lock,
+        census: () => Promise.resolve(census),
+        retrieveContent: () =>
+          Promise.resolve({
+            markdown: '# Body\n',
+            warnings: [],
+            sidecars: [],
+          }),
+        now: () => '2026-07-12T01:00:00.000Z',
+        runId: () => 'run-unsafe-title',
+      },
+    );
+    await expect(sync).rejects.toMatchObject({ category: 'safety' });
+    await expect(sync).rejects.toThrow(parentId);
     expect(context.store.listResources()).toEqual([]);
     expect(context.store.listWarnings('run-unsafe-title')).toEqual([]);
     await expect(
@@ -983,77 +983,77 @@ describe('runSyncOrchestrator', () => {
       ],
     };
 
-    await expect(
-      runSyncOrchestrator(
-        config,
-        { strict: true },
-        {
-          store,
-          lock,
-          census: () => Promise.resolve(withDatabase),
-          fetchDataSourceRows: () =>
-            Promise.resolve([
-              {
-                object: 'page',
-                id: rowId,
-                url: `https://www.notion.so/${rowId}`,
-                last_edited_time: '2026-07-12T00:00:00.000Z',
-                properties: {
-                  Name: {
-                    type: 'title',
-                    title: [{ plain_text: 'First task' }],
-                  },
-                  Reference: {
-                    type: 'title',
-                    title: [{ plain_text: signedUrl('title') }],
-                  },
-                  Files: {
-                    type: 'files',
-                    files: [
-                      {
-                        name: 'attachment',
-                        type: 'file',
-                        file: { url: signedUrl('file') },
+    const sync = runSyncOrchestrator(
+      config,
+      { strict: true },
+      {
+        store,
+        lock,
+        census: () => Promise.resolve(withDatabase),
+        fetchDataSourceRows: () =>
+          Promise.resolve([
+            {
+              object: 'page',
+              id: rowId,
+              url: `https://www.notion.so/${rowId}`,
+              last_edited_time: '2026-07-12T00:00:00.000Z',
+              properties: {
+                Name: {
+                  type: 'title',
+                  title: [{ plain_text: 'First task' }],
+                },
+                Reference: {
+                  type: 'title',
+                  title: [{ plain_text: signedUrl('title') }],
+                },
+                Files: {
+                  type: 'files',
+                  files: [
+                    {
+                      name: 'attachment',
+                      type: 'file',
+                      file: { url: signedUrl('file') },
+                    },
+                    {
+                      name: signedUrl('external-name'),
+                      type: 'external',
+                      external: {
+                        url: 'https://example.com/file?download=1',
                       },
-                      {
-                        name: signedUrl('external-name'),
-                        type: 'external',
-                        external: {
-                          url: 'https://example.com/file?download=1',
-                        },
-                      },
+                    },
+                  ],
+                },
+                Formula: {
+                  type: 'formula',
+                  formula: {
+                    type: 'array',
+                    array: [
+                      { type: 'file', file: { url: signedUrl('formula') } },
                     ],
                   },
-                  Formula: {
-                    type: 'formula',
-                    formula: {
-                      type: 'array',
-                      array: [
-                        { type: 'file', file: { url: signedUrl('formula') } },
-                      ],
-                    },
-                  },
-                  Future: {
-                    type: 'future_type',
-                    future_type: { bare: signedUrl('future') },
-                  },
+                },
+                Future: {
+                  type: 'future_type',
+                  future_type: { bare: signedUrl('future') },
                 },
               },
-            ]),
-          retrieveContent: (notionId) =>
-            Promise.resolve({
-              markdown:
-                notionId === rowId
-                  ? `<table>\n![Hidden](${signedUrl('body')})`
-                  : '# Body\n',
-              warnings: [],
-              sidecars: [],
-            }),
-          now: () => '2026-07-12T01:00:00.000Z',
-          runId: () => 'run-data-source-signed-url',
-        },
-      ),
-    ).rejects.toMatchObject({ category: 'safety' });
+            },
+          ]),
+        retrieveContent: (notionId) =>
+          Promise.resolve({
+            markdown:
+              notionId === rowId
+                ? `<table>\n![Hidden](${signedUrl('body')})`
+                : '# Body\n',
+            warnings: [],
+            sidecars: [],
+          }),
+        now: () => '2026-07-12T01:00:00.000Z',
+        runId: () => 'run-data-source-signed-url',
+      },
+    );
+    await expect(sync).rejects.toMatchObject({ category: 'safety' });
+    await expect(sync).rejects.toThrow(rowId);
     expect(store.listResources()).toEqual([]);
     expect(store.listWarnings('run-data-source-signed-url')).toEqual([]);
     await expect(
