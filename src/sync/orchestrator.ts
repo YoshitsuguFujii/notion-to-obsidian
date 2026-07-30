@@ -62,7 +62,9 @@ import {
 
 const API_VERSION = '2026-03-11';
 const TOOL_VERSION = '0.1.0';
-const TRANSFORM_VERSION = '3';
+const TRANSFORM_VERSION = '4';
+const SIGNED_URL_SAFETY_MESSAGE =
+  'Cannot safely replace retained Notion signed asset URLs. Inspect the source content and run sync --dry-run again before retrying.';
 
 interface LockBoundary {
   acquire(): Promise<void>;
@@ -135,6 +137,8 @@ interface PlannedContent {
   path: PlannedResourcePath;
   body: string;
   bodyReplacedCount: number;
+  bodyBoundaryUndeterminedCount: number;
+  bodyUnparseableSignedUrlCount: number;
   frontmatterTitle: string;
   contentHash: string;
   structureHash: string;
@@ -159,7 +163,7 @@ async function finalizePageBody(
   markdown: string,
   idToPath: ReadonlyMap<string, string>,
   resolveLinks: boolean,
-): Promise<{ markdown: string; replacedCount: number }> {
+): Promise<ReturnType<typeof replaceRetainedSignedUrls>> {
   const linked = resolveLinks
     ? await resolveInternalLinks(markdown, idToPath)
     : markdown;
@@ -305,6 +309,7 @@ export async function runSyncOrchestrator(
     const rowProperties = new Map<string, Record<string, unknown>>();
     const sourceTitleById = new Map<string, string>();
     const titleReplacedCounts = new Map<string, number>();
+    let titleUnsafeCount = 0;
     const seenDataSources = new Set<string>();
     for (const root of validationRoots) {
       const result = await dependencies.census(root.pageId);
@@ -378,6 +383,9 @@ export async function runSyncOrchestrator(
               finalizedTitle.replacedCount,
           );
         }
+        titleUnsafeCount +=
+          finalizedTitle.boundaryUndeterminedCount +
+          finalizedTitle.unparseableSignedUrlCount;
         return { ...resource, title: finalizedTitle.markdown };
       });
       const expanded = finalizedPathExpanded.filter(
@@ -387,6 +395,10 @@ export async function runSyncOrchestrator(
         censuses.push({ ...result, resources: expanded });
       }
       pathCensuses.push({ ...result, resources: finalizedPathExpanded });
+    }
+
+    if (titleUnsafeCount > 0) {
+      throw new DomainError('safety', SIGNED_URL_SAFETY_MESSAGE);
     }
 
     const rootIdByNotionId = new Map<string, string>();
@@ -457,6 +469,7 @@ export async function runSyncOrchestrator(
     }
     const planned: PlannedContent[] = [];
     let warningCount = 0;
+    let contentUnsafeCount = 0;
     for (const census of censuses) {
       for (const resource of census.resources) {
         const path = pathById.get(resource.notionId);
@@ -551,6 +564,10 @@ export async function runSyncOrchestrator(
         );
         body = finalizedBody.markdown;
         const bodyReplacedCount = finalizedBody.replacedCount;
+        const bodyBoundaryUndeterminedCount =
+          finalizedBody.boundaryUndeterminedCount;
+        const bodyUnparseableSignedUrlCount =
+          finalizedBody.unparseableSignedUrlCount;
         const contentHash = hash(body);
         const structureHash = hash(
           JSON.stringify({
@@ -580,6 +597,11 @@ export async function runSyncOrchestrator(
           ? convertDataSourceProperties(rawProperties, idToPath)
           : undefined;
         const properties = convertedProperties?.properties;
+        contentUnsafeCount +=
+          bodyBoundaryUndeterminedCount +
+          bodyUnparseableSignedUrlCount +
+          (convertedProperties?.boundaryUndeterminedCount ?? 0) +
+          (convertedProperties?.unparseableSignedUrlCount ?? 0);
         const finalizedTitle = replaceRetainedSignedUrls(resource.title);
         const propertyReplacedCount =
           (convertedProperties?.replacedCount ?? 0) +
@@ -653,6 +675,8 @@ export async function runSyncOrchestrator(
           path,
           body,
           bodyReplacedCount,
+          bodyBoundaryUndeterminedCount,
+          bodyUnparseableSignedUrlCount,
           frontmatterTitle: finalizedTitle.markdown,
           contentHash,
           structureHash,
@@ -768,6 +792,10 @@ export async function runSyncOrchestrator(
           });
         }
       }
+    }
+
+    if (contentUnsafeCount > 0) {
+      throw new DomainError('safety', SIGNED_URL_SAFETY_MESSAGE);
     }
 
     const validationActions: SyncPlanAction[] = [];
@@ -933,7 +961,13 @@ export async function runSyncOrchestrator(
               idToPath,
               true,
             );
-            if (finalizedBody.replacedCount !== item.bodyReplacedCount) {
+            if (
+              finalizedBody.replacedCount !== item.bodyReplacedCount ||
+              finalizedBody.boundaryUndeterminedCount !==
+                item.bodyBoundaryUndeterminedCount ||
+              finalizedBody.unparseableSignedUrlCount !==
+                item.bodyUnparseableSignedUrlCount
+            ) {
               throw new DomainError(
                 'safety',
                 'Signed asset URL finalization changed between Plan and Apply. Run a dry-run again before retrying the sync.',
