@@ -31,21 +31,30 @@ function isRegionalS3Host(hostname: string): boolean {
   return /^s3\.[a-z0-9-]+\.amazonaws\.com$/u.test(hostname);
 }
 
-function isNotionAssetHost(url: URL): boolean {
-  const hostname = url.hostname.toLowerCase().replace(/\.$/u, '');
+function isNotionAssetLocation(hostname: string, pathname: string): boolean {
+  const normalizedHostname = hostname.toLowerCase().replace(/\.$/u, '');
   if (
-    isDomain(hostname, 'notion.so') ||
-    isDomain(hostname, 'notion-static.com')
+    isDomain(normalizedHostname, 'notion.so') ||
+    isDomain(normalizedHostname, 'notion-static.com')
   )
     return true;
   if (
-    hostname === 'prod-files-secure.s3.amazonaws.com' ||
-    /^prod-files-secure\.s3\.[a-z0-9-]+\.amazonaws\.com$/u.test(hostname)
+    normalizedHostname === 'prod-files-secure.s3.amazonaws.com' ||
+    /^prod-files-secure\.s3\.[a-z0-9-]+\.amazonaws\.com$/u.test(
+      normalizedHostname,
+    )
   )
     return true;
-  if (hostname !== 's3.amazonaws.com' && !isRegionalS3Host(hostname))
+  if (
+    normalizedHostname !== 's3.amazonaws.com' &&
+    !isRegionalS3Host(normalizedHostname)
+  )
     return false;
-  return url.pathname.split('/')[1] === 'secure.notion-static.com';
+  return /^\/secure\.notion-static\.com(?:\/|[?#]|$)/iu.test(pathname);
+}
+
+function isNotionAssetHost(url: URL): boolean {
+  return isNotionAssetLocation(url.hostname, url.pathname);
 }
 
 function hasSignatureParameter(url: URL): boolean {
@@ -93,7 +102,7 @@ function rawKnownNotionAssetHost(value: string): boolean {
     return false;
   const portMatch = /^(.*?)(?::(\d+))?$/u.exec(authority);
   if (!portMatch) return false;
-  const hostname = portMatch[1]!.toLowerCase().replace(/\.$/u, '');
+  const hostname = portMatch[1]!;
   const port = portMatch[2];
   if (
     port &&
@@ -103,20 +112,8 @@ function rawKnownNotionAssetHost(value: string): boolean {
     )
   )
     return false;
-  if (
-    isDomain(hostname, 'notion.so') ||
-    isDomain(hostname, 'notion-static.com')
-  )
-    return true;
-  if (
-    hostname === 'prod-files-secure.s3.amazonaws.com' ||
-    /^prod-files-secure\.s3\.[a-z0-9-]+\.amazonaws\.com$/u.test(hostname)
-  )
-    return true;
-  if (hostname !== 's3.amazonaws.com' && !isRegionalS3Host(hostname))
-    return false;
   const path = value.slice(match[0].length);
-  return /^\/secure\.notion-static\.com(?:\/|[?#]|$)/iu.test(path);
+  return isNotionAssetLocation(hostname, path);
 }
 
 function replacement(value: string): string | undefined {
