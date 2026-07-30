@@ -208,11 +208,8 @@ export function replaceRetainedSignedUrls(
     const scanned = candidateEnd(markdown, start);
     const scannedValue = markdown.slice(start, scanned.end);
     const candidate = withoutTrailingPunctuation(scannedValue);
-    const punctuationRemoved = candidate.length !== scannedValue.length;
     const end = start + candidate.length;
-    const hasProof =
-      scanned.boundary !== 'eof' ||
-      (punctuationRemoved && scanned.boundary === 'eof');
+    const hasProof = scanned.boundary !== 'eof';
     const stableUrl = replacement(candidate);
     if (
       stableUrl !== undefined &&

@@ -156,6 +156,56 @@ describe('replaceRetainedSignedUrls', () => {
     });
   });
 
+  it('hostnameの末尾dotをラベル境界を保ったまま許可する', () => {
+    expect(
+      replaceRetainedSignedUrls(
+        '![image](https://file.notion.so./file.png?Signature=value)',
+      ),
+    ).toEqual({
+      markdown: '![image](https://file.notion.so./file.png)',
+      replacedCount: 1,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it('hostnameの末尾dotを持つ解析不能URLをNotion由来として安全停止対象にする', () => {
+    const input = 'https://file.notion.so./file.png?Signature=% ';
+
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: input,
+      replacedCount: 0,
+      boundaryUndeterminedCount: 0,
+      unparseableSignedUrlCount: 1,
+    });
+  });
+
+  it('コードフェンス・inline code・HTML block内も安定参照へ変換する', () => {
+    const input = [
+      '```md',
+      signed,
+      '```',
+      '',
+      `\`${signed}\``,
+      '',
+      '<table>',
+      `![image](${signed})`,
+    ].join('\n');
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: [
+        '```md',
+        stable,
+        '```',
+        '',
+        `\`${stable}\``,
+        '',
+        '<table>',
+        `![image](${stable})`,
+      ].join('\n'),
+      replacedCount: 3,
+      ...noUnsafeUrls,
+    });
+  });
+
   it('日本語とMarkdownの境界に続く本文を保持する', () => {
     const cases = [
       [`${signed}、後ろ`, `${stable}、後ろ`],
@@ -180,6 +230,17 @@ describe('replaceRetainedSignedUrls', () => {
     expect(replaceRetainedSignedUrls(input)).toEqual({
       markdown: `${stable} https://cdn.notion-static.com/another.pdf `,
       replacedCount: 2,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it('同一URLと異なるURLを出現単位で数える', () => {
+    const another = 'https://cdn.notion-static.com/another.pdf?Expires=123';
+    const input = `${signed}\n${signed}\n${another}\nhttps://example.com/?signature=keep`;
+
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: `${stable}\n${stable}\nhttps://cdn.notion-static.com/another.pdf\nhttps://example.com/?signature=keep`,
+      replacedCount: 3,
       ...noUnsafeUrls,
     });
   });
