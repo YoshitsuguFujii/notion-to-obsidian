@@ -184,6 +184,17 @@ describe('replaceRetainedSignedUrls', () => {
     });
   });
 
+  it('AWS署名の補助parameterを含むNotion URLをMarkdown境界で安定参照へ変換する', () => {
+    const input =
+      '![image](https://file.notion.so/document.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=example%2F20260730%2Fregion%2Fs3%2Faws4_request&X-Amz-Date=20260730T000000Z&X-Amz-Expires=3600&X-Amz-Security-Token=placeholder&X-Amz-Signature=placeholder&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject)';
+
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: '![image](https://file.notion.so/document.png)',
+      replacedCount: 1,
+      ...noUnsafeUrls,
+    });
+  });
+
   it.each([
     `${signed},next `,
     `${signed}&next `,

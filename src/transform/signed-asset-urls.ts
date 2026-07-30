@@ -176,35 +176,18 @@ function withoutTrailingPunctuation(value: string): string {
 }
 
 function hasAmbiguousAsciiTail(value: string): boolean {
-  const nestedStart = value.slice('https://'.length).search(/https?:\/\//iu);
+  const schemeEnd = value.indexOf('://') + '://'.length;
+  const nestedStart = value.slice(schemeEnd).search(/https?:\/\//iu);
   if (nestedStart >= 0) return true;
   const normalized = classificationValue(value);
   const queryStart = normalized.indexOf('?');
   if (queryStart < 0) return false;
   const tail = normalized.slice(queryStart + 1);
-  const parameters = tail.split('&');
-  const signatureIndex = parameters.findIndex((parameter) => {
-    const name = parameter.split('=', 1)[0]!;
-    try {
-      return signatureParameters.has(decodeURIComponent(name).toLowerCase());
-    } catch {
-      return signatureParameters.has(name.toLowerCase());
-    }
+  return tail.split('&').some((parameter) => {
+    const separator = parameter.indexOf('=');
+    if (separator <= 0) return true;
+    return /[,;]/u.test(parameter.slice(separator + 1));
   });
-  if (signatureIndex < 0) return false;
-  const signatureValue = parameters[signatureIndex]!.split('=', 2)[1] ?? '';
-  return (
-    /[,;]/u.test(signatureValue) ||
-    parameters.slice(signatureIndex + 1).some((parameter) => {
-      const name = parameter.split('=', 1)[0]!;
-      try {
-        return !signatureParameters.has(decodeURIComponent(name).toLowerCase());
-      } catch {
-        return !signatureParameters.has(name.toLowerCase());
-      }
-    }) ||
-    /https?:\/\//iu.test(tail)
-  );
 }
 
 export function replaceRetainedSignedUrls(
