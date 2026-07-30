@@ -5,6 +5,11 @@ const signed =
   'https://file.notion.so/document.png?X-Amz-Signature=test-signature#temporary';
 const stable = 'https://file.notion.so/document.png';
 
+const noUnsafeUrls = {
+  boundaryUndeterminedCount: 0,
+  unparseableSignedUrlCount: 0,
+};
+
 describe('replaceRetainedSignedUrls', () => {
   it.each([
     'https://notion.so/file.png?signature=value',
@@ -15,12 +20,13 @@ describe('replaceRetainedSignedUrls', () => {
     'https://prod-files-secure.s3.amazonaws.com/file.png?X-Amz-Algorithm=value',
     'https://s3.us-west-2.amazonaws.com/secure.notion-static.com/file.png?X-Amz-Date=value',
     'https://s3.amazonaws.com/secure.notion-static.com/file.png?X-Amz-Expires=',
-  ])('Notion由来と判定できる一時URLを安定参照へ変換する: %s', (url) => {
-    const result = replaceRetainedSignedUrls(url);
+  ])('構文境界で終わるNotion由来の一時URLを安定参照へ変換する: %s', (url) => {
+    const result = replaceRetainedSignedUrls(`![asset](${url})`);
 
     expect(result).toEqual({
-      markdown: new URL(url).origin + new URL(url).pathname,
+      markdown: `![asset](${new URL(url).origin + new URL(url).pathname})`,
       replacedCount: 1,
+      ...noUnsafeUrls,
     });
   });
 
@@ -34,41 +40,45 @@ describe('replaceRetainedSignedUrls', () => {
     'https://file.notion.so:8443/file.png?Signature=value',
     'https://user:password@file.notion.so/file.png?Signature=value',
     '../_assets/file.png?Signature=value',
-  ])('対象外のURLを変更しない: %s', (url) => {
+  ])('対象外のURLを変更も安全停止対象にも含めない: %s', (url) => {
     expect(replaceRetainedSignedUrls(url)).toEqual({
       markdown: url,
       replacedCount: 0,
+      ...noUnsafeUrls,
     });
   });
 
-  it('scheme・host・query keyの大文字小文字を区別しない', () => {
+  it('scheme・host・query keyの大文字小文字を区別せず変換する', () => {
     expect(
       replaceRetainedSignedUrls(
-        'HTTPS://FILE.NOTION.SO/file.png?x-amz-signature=value',
+        'HTTPS://FILE.NOTION.SO/file.png?x-amz-signature=value ',
       ),
     ).toEqual({
-      markdown: 'https://file.notion.so/file.png',
+      markdown: 'https://file.notion.so/file.png ',
       replacedCount: 1,
+      ...noUnsafeUrls,
     });
   });
 
-  it('標準portを持つURLを通常のhttp URLとして扱う', () => {
+  it('標準portを持つURLを通常のhttps URLとして扱う', () => {
     expect(
       replaceRetainedSignedUrls(
-        'https://file.notion.so:443/file.png?Signature=value',
+        'https://file.notion.so:443/file.png?Signature=value ',
       ),
     ).toEqual({
-      markdown: 'https://file.notion.so/file.png',
+      markdown: 'https://file.notion.so/file.png ',
       replacedCount: 1,
+      ...noUnsafeUrls,
     });
   });
 
   it('percent encodeされた署名keyと重複keyを検出する', () => {
     const input =
-      'https://file.notion.so/file.png?ignored=1&%58-Amz-Signature=&X-Amz-Signature=second';
+      'https://file.notion.so/file.png?ignored=1&%58-Amz-Signature=&X-Amz-Signature=second ';
     expect(replaceRetainedSignedUrls(input)).toEqual({
-      markdown: 'https://file.notion.so/file.png',
+      markdown: 'https://file.notion.so/file.png ',
       replacedCount: 1,
+      ...noUnsafeUrls,
     });
   });
 
@@ -87,11 +97,12 @@ describe('replaceRetainedSignedUrls', () => {
   ])('署名parameter %s は空値でも検出する', (parameter) => {
     expect(
       replaceRetainedSignedUrls(
-        `https://file.notion.so/file.png?${parameter}=`,
+        `![asset](https://file.notion.so/file.png?${parameter}=)`,
       ),
     ).toEqual({
-      markdown: 'https://file.notion.so/file.png',
+      markdown: '![asset](https://file.notion.so/file.png)',
       replacedCount: 1,
+      ...noUnsafeUrls,
     });
   });
 
@@ -101,47 +112,39 @@ describe('replaceRetainedSignedUrls', () => {
     expect(replaceRetainedSignedUrls(input)).toEqual({
       markdown: '<img src="https://file.notion.so/file.png">',
       replacedCount: 1,
+      ...noUnsafeUrls,
     });
   });
 
   it('MarkdownとHTMLのdelimiterを維持する', () => {
     const input = [
       `![image](${signed})`,
-      `Sentence ${signed}.`,
+      `Sentence ${signed}. `,
       `<${signed}>`,
       `<img src='${signed}'>`,
     ].join('\n');
     expect(replaceRetainedSignedUrls(input)).toEqual({
       markdown: [
         `![image](${stable})`,
-        `Sentence ${stable}.`,
+        `Sentence ${stable}. `,
         `<${stable}>`,
         `<img src='${stable}'>`,
       ].join('\n'),
       replacedCount: 4,
+      ...noUnsafeUrls,
     });
   });
 
   it.each(['.', ',', ';', ':', '!', '?'])(
-    '文末記号 %s をURLの外側に維持する',
+    '文末記号 %s を証明済み境界の前でURLの外側に維持する',
     (punctuation) => {
-      expect(replaceRetainedSignedUrls(`${signed}${punctuation}`)).toEqual({
-        markdown: `${stable}${punctuation}`,
+      expect(replaceRetainedSignedUrls(`${signed}${punctuation} `)).toEqual({
+        markdown: `${stable}${punctuation} `,
         replacedCount: 1,
+        ...noUnsafeUrls,
       });
     },
   );
-
-  it('hostnameの末尾dotをラベル境界を保ったまま許可する', () => {
-    expect(
-      replaceRetainedSignedUrls(
-        'https://file.notion.so./file.png?Signature=value',
-      ),
-    ).toEqual({
-      markdown: 'https://file.notion.so./file.png',
-      replacedCount: 1,
-    });
-  });
 
   it('URL path内の括弧を保持してMarkdownの閉じ括弧だけをURL外に残す', () => {
     const input =
@@ -149,6 +152,30 @@ describe('replaceRetainedSignedUrls', () => {
     expect(replaceRetainedSignedUrls(input)).toEqual({
       markdown: '![image](https://file.notion.so/folder/(draft)/file.png)',
       replacedCount: 1,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it('hostnameの末尾dotをラベル境界を保ったまま許可する', () => {
+    expect(
+      replaceRetainedSignedUrls(
+        '![image](https://file.notion.so./file.png?Signature=value)',
+      ),
+    ).toEqual({
+      markdown: '![image](https://file.notion.so./file.png)',
+      replacedCount: 1,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it('hostnameの末尾dotを持つ解析不能URLをNotion由来として安全停止対象にする', () => {
+    const input = 'https://file.notion.so./file.png?Signature=% ';
+
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: input,
+      replacedCount: 0,
+      boundaryUndeterminedCount: 0,
+      unparseableSignedUrlCount: 1,
     });
   });
 
@@ -175,35 +202,122 @@ describe('replaceRetainedSignedUrls', () => {
         `![image](${stable})`,
       ].join('\n'),
       replacedCount: 3,
+      ...noUnsafeUrls,
     });
   });
 
-  it('同一URLの複数出現と異なるURLを出現単位で数える', () => {
+  it('日本語とMarkdownの境界に続く本文を保持する', () => {
+    const cases = [
+      [`${signed}、後ろ`, `${stable}、後ろ`],
+      [`${signed}。後ろ`, `${stable}。後ろ`],
+      [`${signed}です`, `${stable}です`],
+      [`[${signed}](https://example.com)`, `[${stable}](https://example.com)`],
+      [`{${signed}}`, `{${stable}}`],
+      [`${signed}（後ろ）`, `${stable}（後ろ）`],
+    ];
+    for (const [input, expected] of cases) {
+      expect(replaceRetainedSignedUrls(input!)).toEqual({
+        markdown: expected,
+        replacedCount: 1,
+        ...noUnsafeUrls,
+      });
+    }
+  });
+
+  it('空白で区切られた複数URLを個別に変換する', () => {
+    const another = 'https://cdn.notion-static.com/another.pdf?Expires=123';
+    const input = `${signed} ${another} `;
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: `${stable} https://cdn.notion-static.com/another.pdf `,
+      replacedCount: 2,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it('同一URLと異なるURLを出現単位で数える', () => {
     const another = 'https://cdn.notion-static.com/another.pdf?Expires=123';
     const input = `${signed}\n${signed}\n${another}\nhttps://example.com/?signature=keep`;
-    const result = replaceRetainedSignedUrls(input);
 
-    expect(result.markdown).toBe(
-      `${stable}\n${stable}\nhttps://cdn.notion-static.com/another.pdf\nhttps://example.com/?signature=keep`,
-    );
-    expect(result.replacedCount).toBe(3);
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: `${stable}\n${stable}\nhttps://cdn.notion-static.com/another.pdf\nhttps://example.com/?signature=keep`,
+      replacedCount: 3,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it('AWS署名の補助parameterを含むNotion URLをMarkdown境界で安定参照へ変換する', () => {
+    const input =
+      '![image](https://file.notion.so/document.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=example%2F20260730%2Fregion%2Fs3%2Faws4_request&X-Amz-Date=20260730T000000Z&X-Amz-Expires=3600&X-Amz-Security-Token=placeholder&X-Amz-Signature=placeholder&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject)';
+
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: '![image](https://file.notion.so/document.png)',
+      replacedCount: 1,
+      ...noUnsafeUrls,
+    });
   });
 
   it.each([
-    'https://file.notion.so/file.png?Signature=%',
-    'https://file.notion.so/file.png?Signature=%GG',
-    'https://[invalid]/file.png?Signature=value',
-  ])('解釈できないURLを変更せず処理を継続する: %s', (url) => {
-    expect(replaceRetainedSignedUrls(`before ${url} after`)).toEqual({
-      markdown: `before ${url} after`,
+    `${signed},next `,
+    `${signed}&next `,
+    `${signed}&redirect=https://example.com `,
+    `${signed};https://example.com `,
+    signed,
+  ])('本文との境界を証明できないNotion URLは変更しない: %s', (input) => {
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: input,
       replacedCount: 0,
+      boundaryUndeterminedCount: 1,
+      unparseableSignedUrlCount: 0,
+    });
+  });
+
+  it.each([
+    'https://file.notion.so/file.png?Signature=% ',
+    'https://file.notion.so/file.png?Signature=%GG ',
+  ])(
+    '既知Notion hostで解釈できない署名URLは安全停止対象にする: %s',
+    (input) => {
+      expect(replaceRetainedSignedUrls(input)).toEqual({
+        markdown: input,
+        replacedCount: 0,
+        boundaryUndeterminedCount: 0,
+        unparseableSignedUrlCount: 1,
+      });
+    },
+  );
+
+  it.each([
+    'https://[invalid]/file.png?Signature=value ',
+    'https://example.com/画像.png?Signature=value ',
+    'https://file.notion.so@evil.example/file.png?Signature=value ',
+    'https://notion.so.evil.example/file.png?Signature=value ',
+    'https://file.notion.so:8443/file.png?Signature=value ',
+  ])('既知Notion hostと識別できないURLは安全停止対象にしない: %s', (input) => {
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: input,
+      replacedCount: 0,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it('署名parameter名の部分一致では安全停止対象にしない', () => {
+    const input =
+      'https://file.notion.so/file.png?fooX-Amz-Signaturebar=value ';
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: input,
+      replacedCount: 0,
+      ...noUnsafeUrls,
     });
   });
 
   it('同じ変換を繰り返しても本文を変更しない', () => {
-    const once = replaceRetainedSignedUrls(signed);
+    const once = replaceRetainedSignedUrls(`![asset](${signed})`);
     const twice = replaceRetainedSignedUrls(once.markdown);
 
-    expect(twice).toEqual({ markdown: once.markdown, replacedCount: 0 });
+    expect(twice).toEqual({
+      markdown: once.markdown,
+      replacedCount: 0,
+      ...noUnsafeUrls,
+    });
   });
 });

@@ -311,7 +311,7 @@ describe('runSyncOrchestrator', () => {
     const context = await fixture();
     const childId = '22222222-2222-4222-8222-222222222222';
     const signedUrl =
-      'https://file.notion.so/title?X-Amz-Signature=temporary#preview';
+      'https://file.notion.so/title?X-Amz-Signature=temporary#preview（保留）';
     const census: RootCensus = {
       ...context.census,
       resources: [
@@ -350,12 +350,14 @@ describe('runSyncOrchestrator', () => {
       join(context.config.obsidian.managedPath, localPath),
       'utf8',
     );
-    expect(markdown).toContain('title: Reference https://file.notion.so/title');
+    expect(markdown).toContain(
+      'title: Reference https://file.notion.so/title（保留）',
+    );
     expect(markdown).not.toContain('X-Amz-Signature');
     expect(markdown).not.toContain('#preview');
     expect(localPath).not.toContain('temporary');
     expect(context.store.getResource(childId)?.title).toBe(
-      'Reference https://file.notion.so/title',
+      'Reference https://file.notion.so/title（保留）',
     );
     expect(JSON.stringify(result.actions)).not.toContain('temporary');
     expect(
@@ -363,6 +365,67 @@ describe('runSyncOrchestrator', () => {
         ({ type, notionId }) => type === 'WARNING' && notionId === childId,
       ),
     ).toHaveLength(1);
+  });
+
+  it('境界を証明できない親titleがあるpage-id同期を安全停止する', async () => {
+    const context = await fixture();
+    const parentId = '22222222-2222-4222-8222-222222222222';
+    const childId = '33333333-3333-4333-8333-333333333333';
+    const retained =
+      'https://file.notion.so/title?X-Amz-Signature=temporary#preview';
+    const census: RootCensus = {
+      ...context.census,
+      resources: [
+        {
+          notionId: parentId,
+          objectType: 'page',
+          title: retained,
+          parentId: rootId,
+          parentType: 'page',
+          rootId,
+          lastEditedTime: '2026-07-12T00:00:00.000Z',
+          inTrash: false,
+          url: `https://www.notion.so/${parentId}`,
+        },
+        {
+          notionId: childId,
+          objectType: 'page',
+          title: 'Child',
+          parentId,
+          parentType: 'page',
+          rootId,
+          lastEditedTime: '2026-07-12T00:00:00.000Z',
+          inTrash: false,
+          url: `https://www.notion.so/${childId}`,
+        },
+      ],
+    };
+
+    const sync = runSyncOrchestrator(
+      context.config,
+      { pageId: childId },
+      {
+        store: context.store,
+        lock: context.lock,
+        census: () => Promise.resolve(census),
+        retrieveContent: () =>
+          Promise.resolve({
+            markdown: '# Body\n',
+            warnings: [],
+            sidecars: [],
+          }),
+        now: () => '2026-07-12T01:00:00.000Z',
+        runId: () => 'run-unsafe-title',
+      },
+    );
+    await expect(sync).rejects.toMatchObject({ category: 'safety' });
+    await expect(sync).rejects.toThrow(parentId);
+    expect(context.store.listResources()).toEqual([]);
+    expect(context.store.listWarnings('run-unsafe-title')).toEqual([]);
+    await expect(
+      access(join(context.config.obsidian.managedPath, 'Child.md')),
+    ).rejects.toThrow();
+    expect(context.store.getLatestRun()).toMatchObject({ success: false });
   });
 
   it('一時queryの警告とdownload失敗を種類ごとに1件だけ保存する', async () => {
@@ -895,7 +958,7 @@ describe('runSyncOrchestrator', () => {
     ).toContain('Status: Done');
   });
 
-  it('Data Source行の本文・title・propertiesに残った一時queryを1件の警告へ集約する', async () => {
+  it('Data Sourceの表示値に残った境界未確定URLを安全停止する', async () => {
     const { store, config, census, lock } = await fixture();
     const databaseId = '22222222-2222-4222-8222-222222222222';
     const rowId = '33333333-3333-4333-8333-333333333333';
@@ -920,7 +983,7 @@ describe('runSyncOrchestrator', () => {
       ],
     };
 
-    const result = await runSyncOrchestrator(
+    const sync = runSyncOrchestrator(
       config,
       { strict: true },
       {
@@ -935,7 +998,10 @@ describe('runSyncOrchestrator', () => {
               url: `https://www.notion.so/${rowId}`,
               last_edited_time: '2026-07-12T00:00:00.000Z',
               properties: {
-                Name: { type: 'title', title: [{ plain_text: 'First task' }] },
+                Name: {
+                  type: 'title',
+                  title: [{ plain_text: 'First task' }],
+                },
                 Reference: {
                   type: 'title',
                   title: [{ plain_text: signedUrl('title') }],
@@ -986,26 +1052,15 @@ describe('runSyncOrchestrator', () => {
         runId: () => 'run-data-source-signed-url',
       },
     );
-
-    const markdown = await readFile(
-      join(config.obsidian.managedPath, 'Notes', 'Tasks', 'First task.md'),
-      'utf8',
-    );
-    expect(markdown).not.toContain('X-Amz-Signature');
-    expect(markdown).not.toContain('#preview');
-    expect(markdown).toContain('https://example.com/file?download=1');
-    const warnings = result.actions.filter(
-      ({ type, notionId }) => type === 'WARNING' && notionId === rowId,
-    );
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]?.message).toContain('7');
-    expect(store.listWarnings(result.runId)).toEqual([
-      expect.objectContaining({
-        resourceId: rowId,
-        warningType: 'asset_signed_url_replaced',
-      }),
-    ]);
-    expect(result.partialFailure).toBe(true);
+    await expect(sync).rejects.toMatchObject({ category: 'safety' });
+    await expect(sync).rejects.toThrow(rowId);
+    expect(store.listResources()).toEqual([]);
+    expect(store.listWarnings('run-data-source-signed-url')).toEqual([]);
+    await expect(
+      access(
+        join(config.obsidian.managedPath, 'Notes', 'Tasks', 'First task.md'),
+      ),
+    ).rejects.toThrow();
   });
 
   it('assetをdownload・URL rewrite・DB保存し、2回目はcacheで再取得しない', async () => {
