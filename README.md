@@ -147,15 +147,20 @@ node --env-file=.env dist/cli/index.js sync --config config.yaml
 node --env-file=.env dist/cli/index.js sync --config config.yaml --full
 ```
 
-### v1で保存された署名付きURLの修復
+### 保存済みMarkdownの一回限りの再生成
 
-この手順は、v1のstate DBとMarkdownを引き続き使用する利用者だけが対象です。新規導入時や通常運用で`--full`を常用する必要はありません。transform versionは同期runのprovenanceとして記録されますが、保存済みページの移行済み判定には使われないため、versionの変化だけでは既存Markdownの修復完了を判断できません。
+この手順は、次のいずれかに該当する利用者が対象です。
 
-1. `sync --full --dry-run --strict`を実行し、`asset_signed_url_replaced`のWARNINGとUPDATE範囲を確認します。この移行では署名付きURLの検出WARNINGにより非0終了することが想定されます。安全エラーやpartial censusによる非0終了とは区別し、後者がある場合は実同期へ進まず原因を解消してください。
+- v1のstate DBとMarkdownを引き続き使用しており、保存済みの署名付きURLを修復する利用者
+- empty-block正規化（transform version 3）の導入前に同期を済ませており、吸収されて取り込まれなかった画像をローカル参照へ取り込み、吸収されていた本文を独立した段落へ戻す利用者
+
+新規導入時や通常運用で`--full`を常用する必要はありません。transform versionは同期runのprovenanceとして記録されますが、保存済みページの移行済み判定には使われないため、versionの変化だけでは既存Markdownの再生成完了を判断できません。
+
+1. `sync --full --dry-run --strict`を実行し、UPDATE範囲を確認します。v1から移行する場合は、`asset_signed_url_replaced`のWARNINGも確認します。署名付きURLの検出WARNINGによる非0終了が想定されるのはv1からの移行時です。安全エラーやpartial censusによる非0終了とは区別し、後者がある場合は実同期へ進まず原因を解消してください。
 2. Vaultとstate DBを対でバックアップします。
 3. `sync --full`を実行します。失敗または中断した場合は移行済みと判断せず、同じコマンドを再実行してください。
 4. 通常の`sync`を実行し、対象ページがUNCHANGEDになることを確認します。
-5. managed directory内のMarkdown（本文とfrontmatter）を、署名parameterを含む行の内容を表示しない方法で走査し、検出件数が0であることを確認します。`_unsupported/`のJSON sidecarはこの検査対象外です。
+5. v1から移行する場合は、managed directory内のMarkdown（本文とfrontmatter）を、署名parameterを含む行の内容を表示しない方法で走査し、検出件数が0であることを確認します。`_unsupported/`のJSON sidecarはこの検査対象外です。
 
 ロールバックは、修正版で再同期する前進修正を原則とします。v1バイナリへ戻すだけでは署名付きURLを再び保存するため、やむを得ず戻す場合は同じ時点のVaultとstate DBを対で復元してください。
 
@@ -220,7 +225,7 @@ Markdownへリモートを残す場合、Notion由来のURLは署名queryとfrag
 
 **既知の制約:** アセットの所有確認とダウンロード失敗時のlocal fallbackは、`O_NOFOLLOW | O_NONBLOCK`で開いた同一file handleから内容を読み、読取前後のidentityと読取直後のpathを照合して競合窓を縮小します。adoptでは最終照合からstate DB保存まで、managed updateでは最終照合から`rename`までに差し替えの窓が残ります。同じsizeとmetadataへ復元された同一inodeの変更も検出できないため、完全なTOCTOU防止ではありません。従来は`O_NOFOLLOW`を利用できない環境でもアセット取得を試行しましたが、安全なfile openを保証できない環境を新たにsafety停止の対象とする意図的な互換差分があります。
 
-**互換上の注意（本文URL形式の変更）:** 従来はMarkdownへリモートを残す際にNotionの完全な署名付きURL（query・fragmentを含む）を保存していましたが、現在は本文とfrontmatterの最終出力を検査し、queryとfragmentを除いた形で保存します。ローカルへ取り込み済みのアセット、外部由来と判定できるURL、Markdownの他の内容、ダウンロード時に使うURLはいずれも影響を受けません。v1で保存済みのMarkdownは、前述の一回限りの`sync --full`手順で修復してください。
+**互換上の注意（本文URL形式の変更）:** 従来はMarkdownへリモートを残す際にNotionの完全な署名付きURL（query・fragmentを含む）を保存していましたが、現在は本文とfrontmatterの最終出力を検査し、queryとfragmentを除いた形で保存します。ローカルへ取り込み済みのアセット、外部由来と判定できるURL、Markdownの他の内容、ダウンロード時に使うURLはいずれも影響を受けません。v1で保存済みのMarkdownは、前述の「保存済みMarkdownの一回限りの再生成」の手順で修復してください。
 
 **既知の制約:** 本文URLの安定化は、Notionの添付URLのうちqueryとfragmentだけが変わることを前提にしています。origin+path自体が変わる場合は本文が毎回変化し、取得に失敗し続けるページのUPDATEが残ります。また、URLのパスでブロックを特定できない曖昧なアセット（ファイル名や出現位置での対応付けが複数ブロックに一致するもの）は、外部URLと区別できないため安定化の対象外です。
 
