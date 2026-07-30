@@ -142,7 +142,7 @@ function isTerminatingCharacter(character: string): boolean {
   return (
     character.charCodeAt(0) > 0x7f ||
     /\s/u.test(character) ||
-    /[<>"'`{}\[\]\\^|]/u.test(character)
+    /[<>"'`{[}\]\\^|]/u.test(character)
   );
 }
 

@@ -309,8 +309,7 @@ describe('runSyncOrchestrator', () => {
 
   it('frontmatterのtitleに残った一時queryを安定化する', async () => {
     const context = await fixture();
-    const parentId = '22222222-2222-4222-8222-222222222222';
-    const childId = '33333333-3333-4333-8333-333333333333';
+    const childId = '22222222-2222-4222-8222-222222222222';
     const signedUrl =
       'https://file.notion.so/title?X-Amz-Signature=temporary#preview（保留）';
     const census: RootCensus = {
