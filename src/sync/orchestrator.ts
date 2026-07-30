@@ -45,6 +45,7 @@ import {
   convertDataSourceProperty,
 } from '../transform/data-source-properties.js';
 import { transformEnhancedMarkdown } from '../transform/enhanced-markdown.js';
+import { normalizeEmptyBlocks } from '../transform/normalize-empty-blocks.js';
 import {
   buildIdToPathMap,
   resolveInternalLinks,
@@ -61,7 +62,7 @@ import {
 
 const API_VERSION = '2026-03-11';
 const TOOL_VERSION = '0.1.0';
-const TRANSFORM_VERSION = '2';
+const TRANSFORM_VERSION = '3';
 
 interface LockBoundary {
   acquire(): Promise<void>;
@@ -500,7 +501,9 @@ export async function runSyncOrchestrator(
               syncedAt: startedAt,
               notionId: resource.notionId,
             })
-          : await transformEnhancedMarkdown(retrieved.markdown);
+          : await transformEnhancedMarkdown(
+              normalizeEmptyBlocks(retrieved.markdown),
+            );
         let body = sourceBody;
         let plannedAssets: AssetState[] = [];
         const assetStateUpdates: AssetState[] = [];

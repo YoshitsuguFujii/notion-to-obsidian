@@ -1108,6 +1108,66 @@ describe('runSyncOrchestrator', () => {
     expect(downloadAsset).toHaveBeenCalledTimes(1);
   });
 
+  it('空ブロック後の画像をローカル参照にし前後のテキストを独立した段落として保存する', async () => {
+    const { store, config, census, lock } = await fixture();
+    const blockId = '44444444-4444-4444-8444-444444444444';
+    const assetUrl = 'https://files.example/photo.png?signature=temporary';
+    const dependencies = {
+      store,
+      lock,
+      census: () => Promise.resolve(census),
+      retrieveContent: () =>
+        Promise.resolve({
+          markdown: [
+            'Before',
+            '<empty-block/>',
+            `![Photo](${assetUrl})`,
+            '<empty-block/>',
+            'After',
+          ].join('\n'),
+          warnings: [],
+          sidecars: [],
+        }),
+      retrieveBlocks: () =>
+        Promise.resolve([
+          {
+            block: {
+              id: blockId,
+              type: 'image',
+              image: { type: 'file', file: { url: assetUrl }, caption: [] },
+            },
+            children: [],
+          },
+        ]),
+      downloadAsset: async ({ destination }: { destination: string }) => {
+        await mkdir(join(destination, '..'), { recursive: true });
+        await writeFile(destination, 'image');
+        return {
+          size: 5,
+          contentHash:
+            '6105d6cc76af400325e94d588ce511be5bfdbb73b437dc51eca43917d7a43e3d',
+          contentType: 'image/png',
+        };
+      },
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => 'run-empty-block-asset',
+    };
+
+    await runSyncOrchestrator(config, {}, dependencies);
+
+    const localReference = `_assets/${rootId}/${blockId}--photo.png`;
+    const markdown = await readFile(
+      join(config.obsidian.managedPath, 'Notes.md'),
+      'utf8',
+    );
+    expect(markdown).toContain(
+      `Before\n\n![Photo](${localReference})\n\nAfter`,
+    );
+    await expect(
+      readFile(join(config.obsidian.managedPath, localReference), 'utf8'),
+    ).resolves.toBe('image');
+  });
+
   it('title・config変更とfull再同期では存在するcached assetのlocal URLとstateを維持する', async () => {
     const { store, config, census, lock } = await fixture();
     const blockId = '44444444-4444-4444-8444-444444444444';
