@@ -9,6 +9,17 @@ export type DataSourcePropertyValue = unknown;
 interface ConvertedValue {
   value: unknown;
   replacedCount: number;
+  boundaryUndeterminedCount: number;
+  unparseableSignedUrlCount: number;
+}
+
+function unchanged(value: unknown): ConvertedValue {
+  return {
+    value,
+    replacedCount: 0,
+    boundaryUndeterminedCount: 0,
+    unparseableSignedUrlCount: 0,
+  };
 }
 
 function record(value: unknown): UnknownRecord | undefined {
@@ -102,7 +113,12 @@ function fallback(type: string, raw: unknown): unknown {
 
 function replaceSignedUrlText(value: string): ConvertedValue {
   const replaced = replaceRetainedSignedUrls(value);
-  return { value: replaced.markdown, replacedCount: replaced.replacedCount };
+  return {
+    value: replaced.markdown,
+    replacedCount: replaced.replacedCount,
+    boundaryUndeterminedCount: replaced.boundaryUndeterminedCount,
+    unparseableSignedUrlCount: replaced.unparseableSignedUrlCount,
+  };
 }
 
 function stabilizeRawValue(value: unknown): ConvertedValue {
@@ -115,19 +131,31 @@ function stabilizeRawValue(value: unknown): ConvertedValue {
         (count, entry) => count + entry.replacedCount,
         0,
       ),
+      boundaryUndeterminedCount: entries.reduce(
+        (count, entry) => count + entry.boundaryUndeterminedCount,
+        0,
+      ),
+      unparseableSignedUrlCount: entries.reduce(
+        (count, entry) => count + entry.unparseableSignedUrlCount,
+        0,
+      ),
     };
   }
   const item = record(value);
-  if (!item) return { value, replacedCount: 0 };
+  if (!item) return unchanged(value);
 
   const external = record(item.external);
   if (item.type === 'external' && typeof external?.url === 'string') {
     let replacedCount = 0;
+    let boundaryUndeterminedCount = 0;
+    let unparseableSignedUrlCount = 0;
     const stabilized = Object.fromEntries(
       Object.entries(item).map(([key, entry]) => {
         if (key !== 'external') {
           const transformed = stabilizeRawValue(entry);
           replacedCount += transformed.replacedCount;
+          boundaryUndeterminedCount += transformed.boundaryUndeterminedCount;
+          unparseableSignedUrlCount += transformed.unparseableSignedUrlCount;
           return [key, transformed.value];
         }
         const externalFields = Object.fromEntries(
@@ -135,23 +163,34 @@ function stabilizeRawValue(value: unknown): ConvertedValue {
             if (externalKey === 'url') return [externalKey, externalValue];
             const transformed = stabilizeRawValue(externalValue);
             replacedCount += transformed.replacedCount;
+            boundaryUndeterminedCount += transformed.boundaryUndeterminedCount;
+            unparseableSignedUrlCount += transformed.unparseableSignedUrlCount;
             return [externalKey, transformed.value];
           }),
         );
         return [key, externalFields];
       }),
     );
-    return { value: stabilized, replacedCount };
+    return {
+      value: stabilized,
+      replacedCount,
+      boundaryUndeterminedCount,
+      unparseableSignedUrlCount,
+    };
   }
 
   const notionFile = record(item.file);
   if (item.type === 'file' && typeof notionFile?.url === 'string') {
     let replacedCount = 0;
+    let boundaryUndeterminedCount = 0;
+    let unparseableSignedUrlCount = 0;
     const stabilized = Object.fromEntries(
       Object.entries(item).map(([key, entry]) => {
         if (key !== 'file') {
           const transformed = stabilizeRawValue(entry);
           replacedCount += transformed.replacedCount;
+          boundaryUndeterminedCount += transformed.boundaryUndeterminedCount;
+          unparseableSignedUrlCount += transformed.unparseableSignedUrlCount;
           return [key, transformed.value];
         }
         const fileFields = Object.fromEntries(
@@ -159,6 +198,10 @@ function stabilizeRawValue(value: unknown): ConvertedValue {
             if (fileKey !== 'url') {
               const transformed = stabilizeRawValue(fileValue);
               replacedCount += transformed.replacedCount;
+              boundaryUndeterminedCount +=
+                transformed.boundaryUndeterminedCount;
+              unparseableSignedUrlCount +=
+                transformed.unparseableSignedUrlCount;
               return [fileKey, transformed.value];
             }
             const stableUrl = stableReferenceUrl(
@@ -172,18 +215,32 @@ function stabilizeRawValue(value: unknown): ConvertedValue {
         return [key, fileFields];
       }),
     );
-    return { value: stabilized, replacedCount };
+    return {
+      value: stabilized,
+      replacedCount,
+      boundaryUndeterminedCount,
+      unparseableSignedUrlCount,
+    };
   }
 
   let replacedCount = 0;
+  let boundaryUndeterminedCount = 0;
+  let unparseableSignedUrlCount = 0;
   const stabilized = Object.fromEntries(
     Object.entries(item).map(([key, entry]) => {
       const transformed = stabilizeRawValue(entry);
       replacedCount += transformed.replacedCount;
+      boundaryUndeterminedCount += transformed.boundaryUndeterminedCount;
+      unparseableSignedUrlCount += transformed.unparseableSignedUrlCount;
       return [key, transformed.value];
     }),
   );
-  return { value: stabilized, replacedCount };
+  return {
+    value: stabilized,
+    replacedCount,
+    boundaryUndeterminedCount,
+    unparseableSignedUrlCount,
+  };
 }
 
 function convertFiles(property: UnknownRecord): ConvertedValue {
@@ -192,6 +249,8 @@ function convertFiles(property: UnknownRecord): ConvertedValue {
   }
   const files: Array<{ name: string; url: string }> = [];
   let replacedCount = 0;
+  let boundaryUndeterminedCount = 0;
+  let unparseableSignedUrlCount = 0;
   for (const entry of property.files) {
     const item = record(entry);
     if (!item || typeof item.name !== 'string' || typeof item.type !== 'string')
@@ -201,6 +260,8 @@ function convertFiles(property: UnknownRecord): ConvertedValue {
     if (item.type === 'external') {
       const name = replaceSignedUrlText(item.name);
       replacedCount += name.replacedCount;
+      boundaryUndeterminedCount += name.boundaryUndeterminedCount;
+      unparseableSignedUrlCount += name.unparseableSignedUrlCount;
       files.push({ name: name.value as string, url: source.url });
       continue;
     }
@@ -215,15 +276,26 @@ function convertFiles(property: UnknownRecord): ConvertedValue {
         : {
             value: stableNotionUrl,
             replacedCount: stableNotionUrl === source.url ? 0 : 1,
+            boundaryUndeterminedCount: 0,
+            unparseableSignedUrlCount: 0,
           };
     replacedCount += name.replacedCount;
     replacedCount += stabilizedUrl.replacedCount;
+    boundaryUndeterminedCount += name.boundaryUndeterminedCount;
+    unparseableSignedUrlCount += name.unparseableSignedUrlCount;
+    boundaryUndeterminedCount += stabilizedUrl.boundaryUndeterminedCount ?? 0;
+    unparseableSignedUrlCount += stabilizedUrl.unparseableSignedUrlCount ?? 0;
     files.push({
       name: name.value as string,
       url: stabilizedUrl.value as string,
     });
   }
-  return { value: files, replacedCount };
+  return {
+    value: files,
+    replacedCount,
+    boundaryUndeterminedCount,
+    unparseableSignedUrlCount,
+  };
 }
 
 function convertDataSourcePropertyResult(property: unknown): ConvertedValue {
@@ -239,6 +311,10 @@ function convertDataSourcePropertyResult(property: unknown): ConvertedValue {
     return {
       value: { value: value.value, raw: raw.value },
       replacedCount: value.replacedCount + raw.replacedCount,
+      boundaryUndeterminedCount:
+        value.boundaryUndeterminedCount + raw.boundaryUndeterminedCount,
+      unparseableSignedUrlCount:
+        value.unparseableSignedUrlCount + raw.unparseableSignedUrlCount,
     };
   }
   return stabilizeRawValue(convertDataSourceProperty(property));
@@ -379,8 +455,12 @@ export function convertDataSourceProperties(
 ): {
   properties: Record<string, unknown>;
   replacedCount: number;
+  boundaryUndeterminedCount: number;
+  unparseableSignedUrlCount: number;
 } {
   let replacedCount = 0;
+  let boundaryUndeterminedCount = 0;
+  let unparseableSignedUrlCount = 0;
   const converted = Object.fromEntries(
     Object.entries(properties).map(([name, property]) => {
       const item = record(property);
@@ -389,8 +469,15 @@ export function convertDataSourceProperties(
           ? stabilizeRawValue(resolveRelationProperty(property, idToPath))
           : convertDataSourcePropertyResult(property);
       replacedCount += result.replacedCount;
+      boundaryUndeterminedCount += result.boundaryUndeterminedCount;
+      unparseableSignedUrlCount += result.unparseableSignedUrlCount;
       return [name, result.value];
     }),
   );
-  return { properties: converted, replacedCount };
+  return {
+    properties: converted,
+    replacedCount,
+    boundaryUndeterminedCount,
+    unparseableSignedUrlCount,
+  };
 }
