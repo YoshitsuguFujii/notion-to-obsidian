@@ -147,6 +147,64 @@ describe('replaceRetainedSignedUrls', () => {
     });
   });
 
+  it('HTMLブロックの内側でも開き括弧と閉じ括弧が揃う画像記法は範囲を確定する', () => {
+    const input = `<table>\n![image](${signed})\n`;
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: `<table>\n![image](${stable})\n`,
+      replacedCount: 1,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it.each([
+    `<table>\nfoo](${signed}(note))\n`,
+    `<table>\n\\[label](${signed}(note))\n`,
+    `<table>\n![image](${signed}（保留）\n`,
+  ])(
+    'HTMLブロック内でも開き括弧か閉じ括弧を欠く記法は範囲を確定しない: %s',
+    (input) => {
+      expect(replaceRetainedSignedUrls(input)).toEqual({
+        markdown: input,
+        replacedCount: 0,
+        boundaryUndeterminedCount: 1,
+        unparseableSignedUrlCount: 0,
+      });
+    },
+  );
+
+  it('HTMLブロックの引用符付き属性値は範囲を確定する', () => {
+    const input = `<table>\n<img src="${signed}">\n`;
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: `<table>\n<img src="${stable}">\n`,
+      replacedCount: 1,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it.each([
+    `foo](${signed}(note))\n`,
+    `\\[label](${signed}(note))\n`,
+    ['```text', `foo](${signed}(note))`, '```', ''].join('\n'),
+  ])('Markdownリンクとして成立しない`](`は範囲を確定しない: %s', (input) => {
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: input,
+      replacedCount: 0,
+      boundaryUndeterminedCount: 1,
+      unparseableSignedUrlCount: 0,
+    });
+  });
+
+  it.each([
+    '<img src="https://file.notion.so/a?foo=1&#38;X-Amz-Signature=secret">',
+    '<img src="https://file.notion.so/a?foo=1&#x26;X-Amz-Signature=secret">',
+  ])('HTML属性の数値文字参照で区切られた署名keyを検出する: %s', (input) => {
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: '<img src="https://file.notion.so/a">',
+      replacedCount: 1,
+      ...noUnsafeUrls,
+    });
+  });
+
   it.each([
     `[こちら](${signed}（保留）\n`,
     `[a](${signed} 続き\n`,
@@ -237,7 +295,6 @@ describe('replaceRetainedSignedUrls', () => {
       '',
       `\`${signed}\``,
       '',
-      '<table>',
       `![image](${signed})`,
       '',
     ].join('\n');
@@ -249,7 +306,6 @@ describe('replaceRetainedSignedUrls', () => {
         '',
         `\`${signed}\``,
         '',
-        '<table>',
         `![image](${stable})`,
         '',
       ].join('\n'),
@@ -431,11 +487,16 @@ describe('replaceRetainedSignedUrls', () => {
       for (let iteration = 0; iteration < 200; iteration += 1) {
         const prefix = randomText(iteration % 17);
         const suffix = randomText(iteration % 13);
-        const result = replaceRetainedSignedUrls(
-          `${prefix}${wrap(signed)}${suffix}`,
-        );
+        const input = `${prefix}${wrap(signed)}${suffix}`;
+        const result = replaceRetainedSignedUrls(input);
 
-        expect(result.markdown).toBe(`${prefix}${wrap(stable)}${suffix}`);
+        // 周辺文字列がMarkdownの構造を変えると停止側へ倒れるため、置換の有無は問わない。
+        // どちらに倒れてもURL以外の文字が失われないことを固定する。
+        expect(result.markdown).toBe(
+          result.replacedCount > 0
+            ? `${prefix}${wrap(stable)}${suffix}`
+            : input,
+        );
       }
     },
   );
