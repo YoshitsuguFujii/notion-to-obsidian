@@ -381,6 +381,9 @@ export function replaceRetainedSignedUrls(
   let unparseableSignedUrlCount = 0;
 
   for (const span of spans) {
+    // span は昇順だが重複しない保証はない（html ノードは属性値と destination を別々に集める）。
+    // 重なりを許すと sourceStart が後退して出力に本文が二重に現れる。
+    if (span.start < sourceStart) continue;
     const value = markdown.slice(span.start, span.end);
     const stableUrl = replacement(value);
     if (stableUrl !== undefined) {

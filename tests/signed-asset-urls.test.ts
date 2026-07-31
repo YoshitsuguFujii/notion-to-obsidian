@@ -484,11 +484,13 @@ describe('replaceRetainedSignedUrls', () => {
       const randomText = (length: number): string =>
         Array.from({ length }, nextCharacter).join('');
 
+      let replacedIterations = 0;
       for (let iteration = 0; iteration < 200; iteration += 1) {
         const prefix = randomText(iteration % 17);
         const suffix = randomText(iteration % 13);
         const input = `${prefix}${wrap(signed)}${suffix}`;
         const result = replaceRetainedSignedUrls(input);
+        if (result.replacedCount > 0) replacedIterations += 1;
 
         // 周辺文字列がMarkdownの構造を変えると停止側へ倒れるため、置換の有無は問わない。
         // どちらに倒れてもURL以外の文字が失われないことを固定する。
@@ -498,6 +500,9 @@ describe('replaceRetainedSignedUrls', () => {
             : input,
         );
       }
+
+      // すべて停止側へ倒れる実装でも上の assert は通ってしまうため、置換が起きたことも固定する。
+      expect(replacedIterations).toBeGreaterThan(0);
     },
   );
 

@@ -87,7 +87,7 @@ node --env-file=.env dist/cli/index.js verify --config config.yaml
 2. Markdown主経路で取得できる場合は`src/transform/`のremark AST変換を追加する。code / inline code / URL / HTML / 数式を正規表現の全体置換で壊さない。
 3. Markdownで保全できない場合は`src/transform/fallback-block-renderer.ts`へBlock API変換を追加する。対応不能時のplaceholderとsidecarは残す。
 4. golden / fixtureと、対応・フォールバック・情報保全のテストを先に追加する。変換互換性が変わる場合は`transform_version`とADRの更新要否を検討する。
-5. 変換処理をパイプラインへ追加する際は、remarkで複数回parse→stringify（round-trip）を繰り返すとWikiLink等のObsidian独自の文字列構文が破壊される（`[[path|alias]]`が`\[\[path\|alias\]\]`へエスケープされる）ことに注意する。パイプライン順序は「1. Enhanced Markdown変換（AST処理）→ 2. アセット等のAST後処理 → 3. 最終段階での文字列置換（WikiLink解決等）」とし、文字列置換が完了した本文を再度remarkに渡さない。remark採用の背景は`docs/adr/006-use-remark-for-enhanced-markdown.md`を参照。
+5. 変換処理をパイプラインへ追加する際は、remarkで複数回parse→stringify（round-trip）を繰り返すとWikiLink等のObsidian独自の文字列構文が破壊される（`[[path|alias]]`が`\[\[path\|alias\]\]`へエスケープされる）ことに注意する。パイプライン順序は「1. Enhanced Markdown変換（AST処理）→ 2. アセット等のAST後処理 → 3. 最終段階での文字列置換（WikiLink解決等）」とし、文字列置換が完了した本文を再度remarkでstringifyしない。**parseだけを行って位置情報を取るのは可**（本文を書き換えないため round-trip の破壊が起きない）。署名付きURLの範囲確定はこの形でparseを使っている。remark採用の背景は`docs/adr/006-use-remark-for-enhanced-markdown.md`を参照。
 
 ### DB migration
 
