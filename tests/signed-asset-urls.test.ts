@@ -520,6 +520,21 @@ describe('replaceRetainedSignedUrls', () => {
     },
   );
 
+  it.each([
+    `<img src="${signed}">`,
+    `<table>\n![image](${signed})\n`,
+    `[link](<${signed}>)`,
+  ])('HTML経路でも同じ変換を繰り返して本文を変更しない: %s', (input) => {
+    const once = replaceRetainedSignedUrls(input);
+    expect(once.replacedCount).toBe(1);
+
+    expect(replaceRetainedSignedUrls(once.markdown)).toEqual({
+      markdown: once.markdown,
+      replacedCount: 0,
+      ...noUnsafeUrls,
+    });
+  });
+
   it('同じ変換を繰り返しても本文を変更しない', () => {
     const once = replaceRetainedSignedUrls(`![asset](${signed})`);
     const twice = replaceRetainedSignedUrls(once.markdown);
