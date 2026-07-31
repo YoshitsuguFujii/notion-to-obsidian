@@ -3,9 +3,43 @@ import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import { stableReferenceUrl } from './stable-url.js';
 
+interface DestinationToken {
+  start: { offset: number };
+  end: { offset: number };
+}
+
+// link / image ノードの destination token の位置。parse 中に enter.resourceDestination
+// を通じて収集する。`](` の記号列を探す推測ではなく、parser が確定した destination の
+// 位置そのものを使う。単一スレッド・同期呼び出しの前提で、parse 呼び出しのたびにリセットする。
+let destinationTokenSpans: UrlSpan[] = [];
+
+function collectDestinationTokens(this: {
+  data: (key: string) => unknown;
+}): void {
+  const data = this.data('fromMarkdownExtensions') as unknown[] | undefined;
+  const extensions = data ?? [];
+  extensions.push({
+    enter: {
+      resourceDestination(token: DestinationToken): void {
+        destinationTokenSpans.push({
+          start: token.start.offset,
+          end: token.end.offset,
+        });
+      },
+    },
+  });
+  (this as unknown as { data: (key: string, value: unknown) => void }).data(
+    'fromMarkdownExtensions',
+    extensions,
+  );
+}
+
 // parse だけを行い stringify はしない。AGENTS.md が禁じるのは round-trip による
 // WikiLink 等の破壊であり、位置情報の取得だけなら本文へ影響しない。
-const markdownParser = unified().use(remarkParse).use(remarkGfm);
+const markdownParser = unified()
+  .use(remarkParse)
+  .use(remarkGfm)
+  .use(collectDestinationTokens);
 
 interface MarkdownNode {
   type: string;
@@ -224,9 +258,24 @@ function closingDelimiter(
   return undefined;
 }
 
-// link / image ノードの destination。ノードの範囲は parser が確定しているので、
-// その内側で `](` を探すのは記号列の推測ではなく確定した構文の内部を見ていることになる。
-// `](` の直後から始まる destination。`limit` は属する構文の終端で、これを越える候補は採らない。
+// HTML の属性値は改行を含んでもよい。開始タグの終端（`>`）を見失わないためだけに使う
+// ので、値の中身は問わない。実際に置換対象として採用する span は urlSpan の `\S+` が
+// 改行を含む値を弾くため、ここで改行を許しても署名 URL の抽出範囲は変わらない。
+function closingQuoteAcrossLines(
+  markdown: string,
+  from: number,
+  closing: string,
+  limit: number,
+): number | undefined {
+  for (let index = from; index < limit; index += 1) {
+    if (markdown[index] === closing) return index;
+  }
+  return undefined;
+}
+
+// HTML ブロック内の `<table>` 救済（htmlDestinationSpans）専用。link / image ノードの
+// destination は resourceDestination token（destinationTokenSpans）を使うため、こちらは
+// AST が確定していない生 HTML の中で `](` 記法を受け入れる場合にのみ使う。
 function destinationSpan(
   markdown: string,
   from: number,
@@ -242,40 +291,63 @@ function destinationSpan(
   return urlSpan(markdown, from, end);
 }
 
-function linkNodeSpan(
-  markdown: string,
+// link / image ノードの直接の子孫にある link / image ノードの範囲。CommonMark はリンクの
+// 入れ子を許さないが、リンクテキストに画像は置ける（`[![alt](inner)](outer)`）。内側の
+// destination token を外側の destination と取り違えないために除外範囲として使う。
+function descendantLinkOrImageRanges(node: MarkdownNode): UrlSpan[] {
+  const ranges: UrlSpan[] = [];
+  for (const child of node.children ?? []) {
+    const childStart = child.position?.start.offset;
+    const childEnd = child.position?.end.offset;
+    if (
+      (child.type === 'link' || child.type === 'image') &&
+      childStart !== undefined &&
+      childEnd !== undefined
+    )
+      ranges.push({ start: childStart, end: childEnd });
+    ranges.push(...descendantLinkOrImageRanges(child));
+  }
+  return ranges;
+}
+
+// ノード範囲内にあり、かつ入れ子の link / image ノードに属さない destination token。
+// 記号列を後方から推測する `lastIndexOf('](', ...)` と違い、parser が確定した位置だけを見る。
+function ownDestinationToken(
   start: number,
   end: number,
+  exclude: UrlSpan[],
 ): UrlSpan | undefined {
+  return destinationTokenSpans.find(
+    (span) =>
+      span.start >= start &&
+      span.end <= end &&
+      !exclude.some(
+        (range) => span.start >= range.start && span.end <= range.end,
+      ),
+  );
+}
+
+function linkNodeSpan(
+  markdown: string,
+  node: MarkdownNode,
+): UrlSpan | undefined {
+  const start = node.position!.start.offset!;
+  const end = node.position!.end.offset!;
   // autolink `<https://…>`。GFM の literal autolink（生の URL がそのままリンクになる形）は
   // 終端規則が本文の密着を判別できないため、`<` で始まるものだけを構文として認める。
   if (markdown[start] === '<') {
     if (markdown[end - 1] !== '>') return undefined;
     return urlSpan(markdown, start + 1, end - 1);
   }
-  const marker = markdown.lastIndexOf('](', end);
-  if (marker < start) return undefined;
-  return destinationSpan(markdown, marker + 2, end);
-}
-
-// HTML の引用符付き属性値。HTML ノードの内側だけを見るので、本文中の `="` とは混同しない。
-function attributeSpans(
-  markdown: string,
-  start: number,
-  end: number,
-): UrlSpan[] {
-  const spans: UrlSpan[] = [];
-  for (let index = start; index < end; index += 1) {
-    const character = markdown[index]!;
-    if ((character !== '"' && character !== "'") || markdown[index - 1] !== '=')
-      continue;
-    const close = closingDelimiter(markdown, index + 1, character);
-    if (close === undefined || close >= end) continue;
-    const span = urlSpan(markdown, index + 1, close);
-    if (span) spans.push(span);
-    index = close;
-  }
-  return spans;
+  const token = ownDestinationToken(
+    start,
+    end,
+    descendantLinkOrImageRanges(node),
+  );
+  if (!token) return undefined;
+  if (markdown[token.start] === '<' && markdown[token.end - 1] === '>')
+    return urlSpan(markdown, token.start + 1, token.end - 1);
+  return urlSpan(markdown, token.start, token.end);
 }
 
 function isEscaped(markdown: string, index: number): boolean {
@@ -285,23 +357,107 @@ function isEscaped(markdown: string, index: number): boolean {
   return backslashes % 2 === 1;
 }
 
-function hasOpeningBracketOnLine(
+// HTML の開始タグかどうか。`<!--`（コメント）・`<!DOCTYPE`/`<![CDATA[`（`<!`）・`</tag>`
+// （終了タグ）・`<?`（処理命令）はいずれもタグ名で始まらないため除外される。
+function isStartTagOpening(markdown: string, index: number): boolean {
+  const next = markdown[index + 1];
+  return next !== undefined && /[A-Za-z]/u.test(next);
+}
+
+// 開始タグの終端（引用符内の `>` はタグを終端させない）。HTML の開始タグは属性の値が
+// 複数行にまたがってもよいため、タグ自体の走査も引用符の対応探索も改行で打ち切らない
+// （`closingQuoteAcrossLines`）。属性値そのものの抽出（attributeSpans）は同じ行で
+// 閉じる制約を維持するため、値が複数行にまたがる属性は個別に読み飛ばされるだけで、
+// 同じタグ内の他の属性（署名 URL を持つ `src` 等）まで巻き込んでタグ全体を諦めない。
+function startTagEnd(
+  markdown: string,
+  tagStart: number,
+  limit: number,
+): number | undefined {
+  let index = tagStart + 1;
+  while (index < limit) {
+    const character = markdown[index]!;
+    if (character === '>') return index;
+    if (character === '"' || character === "'") {
+      const close = closingQuoteAcrossLines(
+        markdown,
+        index + 1,
+        character,
+        limit,
+      );
+      if (close === undefined) return undefined;
+      index = close + 1;
+      continue;
+    }
+    index += 1;
+  }
+  return undefined;
+}
+
+// HTML の引用符付き属性値。開始タグの内側だけを走査するため、raw text 要素
+// （script/style/textarea/title）の本文・コメント・CDATA・処理命令にある `="…"` を
+// 属性値と誤認しない。開始タグの外側は一切見ない（fail-closed）。
+function attributeSpans(
+  markdown: string,
+  start: number,
+  end: number,
+): UrlSpan[] {
+  const spans: UrlSpan[] = [];
+  let index = start;
+  while (index < end) {
+    if (markdown[index] !== '<' || !isStartTagOpening(markdown, index)) {
+      index += 1;
+      continue;
+    }
+    const tagEnd = startTagEnd(markdown, index, end);
+    if (tagEnd === undefined) {
+      index += 1;
+      continue;
+    }
+    for (let cursor = index; cursor < tagEnd; cursor += 1) {
+      const character = markdown[cursor]!;
+      if (
+        (character !== '"' && character !== "'") ||
+        markdown[cursor - 1] !== '='
+      )
+        continue;
+      const close = closingDelimiter(markdown, cursor + 1, character);
+      if (close === undefined || close >= tagEnd) continue;
+      const span = urlSpan(markdown, cursor + 1, close);
+      if (span) spans.push(span);
+      cursor = close;
+    }
+    index = tagEnd + 1;
+  }
+  return spans;
+}
+
+// `]` から後方へ括弧の対応を数え、未対応の未エスケープ `[`（`![` を含む）が同じ行にあるかを
+// 見る。対応済みの `[note]` のような無関係な角括弧は数え尽くされて対象にならない。
+function hasMatchingOpeningBracketOnLine(
   markdown: string,
   closeIndex: number,
   limit: number,
 ): boolean {
+  let depth = 1;
   for (let cursor = closeIndex - 1; cursor >= limit; cursor -= 1) {
     const character = markdown[cursor]!;
     if (character === '\n') return false;
-    if (character === '[' && !isEscaped(markdown, cursor)) return true;
+    if (isEscaped(markdown, cursor)) continue;
+    if (character === ']') {
+      depth += 1;
+    } else if (character === '[') {
+      depth -= 1;
+      if (depth === 0) return true;
+    }
   }
   return false;
 }
 
 // HTML ブロックの内側では Markdown のリンク構文は解釈されないが、Notion の `<table>` は
 // 画像記法をそのまま含んで出力する。実データを止めないために受け入れるが、対応する開き括弧が
-// 同じ行にあり destination が閉じている場合に限る。`foo](URL(note))` のように開き括弧を
-// 欠く記号列を受け入れると、密着した本文を span に含めて失うため。
+// 同じ行にあり destination が閉じている場合に限る。`foo](URL(note))` のように対応する開き
+// 括弧を欠く記号列を受け入れると、密着した本文を span に含めて失うため。
 function htmlDestinationSpans(
   markdown: string,
   start: number,
@@ -311,7 +467,7 @@ function htmlDestinationSpans(
   for (let index = start; index + 1 < end; index += 1) {
     if (markdown[index] !== ']' || markdown[index + 1] !== '(') continue;
     if (isEscaped(markdown, index)) continue;
-    if (!hasOpeningBracketOnLine(markdown, index, start)) continue;
+    if (!hasMatchingOpeningBracketOnLine(markdown, index, start)) continue;
     const span = destinationSpan(markdown, index + 2, end);
     if (!span) continue;
     spans.push(span);
@@ -325,7 +481,7 @@ function nodeSpans(markdown: string, node: MarkdownNode): UrlSpan[] {
   const end = node.position?.end.offset;
   if (start === undefined || end === undefined) return [];
   if (node.type === 'link' || node.type === 'image') {
-    const span = linkNodeSpan(markdown, start, end);
+    const span = linkNodeSpan(markdown, node);
     return span ? [span] : [];
   }
   if (node.type === 'html')
@@ -346,6 +502,9 @@ function confirmedUrlSpans(markdown: string): UrlSpan[] {
     spans.push(...nodeSpans(markdown, node));
     for (const child of node.children ?? []) collect(child);
   };
+  // destinationTokenSpans は parse 呼び出しのたびにリセットする。単一スレッド・同期呼び出し
+  // なので、parse 完了直後に読む限り前回呼び出し分と混ざらない。
+  destinationTokenSpans = [];
   try {
     collect(markdownParser.parse(markdown) as MarkdownNode);
   } catch {
