@@ -144,9 +144,6 @@ interface PlannedContent {
   resource: CensusResource;
   path: PlannedResourcePath;
   body: string;
-  bodyReplacedCount: number;
-  bodyBoundaryUndeterminedCount: number;
-  bodyUnparseableSignedUrlCount: number;
   bodyReplacements: Replacement[];
   bodyUnsafe: UnsafeOccurrence[];
   frontmatterTitle: string;
@@ -692,9 +689,6 @@ export async function runSyncOrchestrator(
           resource,
           path,
           body,
-          bodyReplacedCount,
-          bodyBoundaryUndeterminedCount,
-          bodyUnparseableSignedUrlCount,
           bodyReplacements,
           bodyUnsafe,
           frontmatterTitle: finalizedTitle.markdown,

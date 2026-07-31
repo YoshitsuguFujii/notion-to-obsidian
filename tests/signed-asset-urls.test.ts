@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   replaceRetainedSignedUrls,
   replacementsMatch,
+  unsafeOccurrencesMatch,
 } from '../src/transform/signed-asset-urls.js';
 
 const signed =
@@ -450,7 +451,6 @@ describe('replaceRetainedSignedUrls', () => {
   });
 
   it('空白で区切られた複数の裸URLをそれぞれ停止対象に数える', () => {
-    const another = 'https://cdn.notion-static.com/another.pdf?Expires=123';
     const input = `${signed} ${another} `;
     expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: input,
@@ -461,7 +461,6 @@ describe('replaceRetainedSignedUrls', () => {
   });
 
   it('同一URLと異なるURLを出現単位で数える', () => {
-    const another = 'https://cdn.notion-static.com/another.pdf?Expires=123';
     const input = [
       `![a](${signed})`,
       `![b](${signed})`,
@@ -725,6 +724,44 @@ describe('replaceRetainedSignedUrls', () => {
 
     it('空配列同士は一致する', () => {
       expect(replacementsMatch([], [])).toBe(true);
+    });
+  });
+
+  describe('unsafeOccurrencesMatch（Plan/Apply比較）', () => {
+    it('同じ安全停止対象なら出現順が違っても一致する', () => {
+      const planned = replaceRetainedSignedUrls(
+        `前段 ${signed}(note) 後段\n中段 ${another}(note2) 末尾\n`,
+      );
+      const applied = replaceRetainedSignedUrls(
+        `前段 ${another}(note2) 後段\n中段 ${signed}(note) 末尾\n`,
+      );
+      expect(unsafeOccurrencesMatch(planned.unsafe, applied.unsafe)).toBe(true);
+    });
+
+    it('reasonが変われば不一致にする（boundary-undetermined と unparseable）', () => {
+      const boundaryUndetermined = replaceRetainedSignedUrls(
+        `前段 ${signed}(note) 後段\n`,
+      );
+      const unparseable = replaceRetainedSignedUrls(
+        '<img src="https://file.notion.so/file.png?Signature=%">',
+      );
+      expect(
+        unsafeOccurrencesMatch(boundaryUndetermined.unsafe, unparseable.unsafe),
+      ).toBe(false);
+    });
+
+    it('contextが変われば不一致にする（bare-url と html-attribute）', () => {
+      const bareUrl = replaceRetainedSignedUrls(`前段 ${signed}(note) 後段\n`);
+      const htmlAttribute = replaceRetainedSignedUrls(
+        '<img src="https://file.notion.so/file.png?Signature=%">',
+      );
+      expect(unsafeOccurrencesMatch(bareUrl.unsafe, htmlAttribute.unsafe)).toBe(
+        false,
+      );
+    });
+
+    it('空配列同士は一致する', () => {
+      expect(unsafeOccurrencesMatch([], [])).toBe(true);
     });
   });
 });

@@ -14,7 +14,7 @@ export type ReplacementContext =
   | 'html-attribute'
   | 'html-rescue';
 
-// 裸URLの走査は特定の構文ノードに紐づかないため、context を持たない。
+// 裸URLの走査は特定の構文ノードに紐づかないため、専用の 'bare-url' を割り当てる。
 export type UnsafeOccurrenceContext = ReplacementContext | 'bare-url';
 
 export interface Replacement {
@@ -85,7 +85,7 @@ function fingerprintSetsMatch<T>(
 }
 
 // Plan で確定した置換内容と Apply で再計算した置換内容が一致するかを検証する。
-// 件数だけの比較（旧実装）では「同じ件数だが別のURLを置換した」を検出できないため、
+// 件数だけの比較では「同じ件数だが別のURLを置換した」を検出できないため、
 // 置換元URLのhash・置換後の値・構文分類の多重集合を比較する。
 export function replacementsMatch(
   left: readonly Replacement[],
@@ -639,20 +639,25 @@ function isSignedNotionAsset(value: string): boolean {
   );
 }
 
-const emptyResult = {
-  replacedCount: 0,
-  boundaryUndeterminedCount: 0,
-  unparseableSignedUrlCount: 0,
-  replacements: [],
-  unsafe: [],
-};
+// 呼び出しごとに新しい配列を返す（呼び出し間で同一インスタンスを共有すると、
+// どこかで戻り値の配列へ push した場合に以降の全呼び出しへ波及するため）。
+function emptyResult(markdown: string): SignedUrlReplacementResult {
+  return {
+    markdown,
+    replacedCount: 0,
+    boundaryUndeterminedCount: 0,
+    unparseableSignedUrlCount: 0,
+    replacements: [],
+    unsafe: [],
+  };
+}
 
 export function replaceRetainedSignedUrls(
   markdown: string,
 ): SignedUrlReplacementResult {
   // URL が無ければ span も停止対象も生じない。Data Source は property 文字列ごとに
   // 本関数を呼ぶため、そのたびに Markdown を parse しないよう先に打ち切る。
-  if (!/https?:\/\//iu.test(markdown)) return { markdown, ...emptyResult };
+  if (!/https?:\/\//iu.test(markdown)) return emptyResult(markdown);
   const spans = confirmedUrlSpans(markdown);
   const output: string[] = [];
   let sourceStart = 0;
