@@ -750,10 +750,16 @@ describe('replaceRetainedSignedUrls', () => {
       ).toBe(false);
     });
 
-    it('contextが変われば不一致にする（bare-url と html-attribute）', () => {
-      const bareUrl = replaceRetainedSignedUrls(`前段 ${signed}(note) 後段\n`);
+    it('reasonとsourceHashが同じでもcontextが変われば不一致にする（bare-url と html-attribute）', () => {
+      const unparseableSignedUrl =
+        'https://file.notion.so/file.png?Signature=%';
+      const bareUrl = replaceRetainedSignedUrls(`${unparseableSignedUrl}\n`);
       const htmlAttribute = replaceRetainedSignedUrls(
-        '<img src="https://file.notion.so/file.png?Signature=%">',
+        `<img src="${unparseableSignedUrl}">`,
+      );
+      expect(bareUrl.unsafe[0]!.reason).toBe(htmlAttribute.unsafe[0]!.reason);
+      expect(bareUrl.unsafe[0]!.sourceHash).toBe(
+        htmlAttribute.unsafe[0]!.sourceHash,
       );
       expect(unsafeOccurrencesMatch(bareUrl.unsafe, htmlAttribute.unsafe)).toBe(
         false,

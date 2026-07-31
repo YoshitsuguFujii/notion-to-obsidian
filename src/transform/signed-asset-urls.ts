@@ -18,6 +18,8 @@ export type ReplacementContext =
 export type UnsafeOccurrenceContext = ReplacementContext | 'bare-url';
 
 export interface Replacement {
+  // Plan/Apply比較（fingerprintSetsMatch）では使わない（offsetはアセット処理で
+  // 正当にずれうるため）。診断・将来のツール向けに元の出現位置を保持する。
   start: number;
   end: number;
   sourceHash: string;
