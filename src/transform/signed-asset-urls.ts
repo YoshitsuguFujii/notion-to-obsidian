@@ -135,97 +135,170 @@ function replacement(value: string): string | undefined {
   }
 }
 
-function isTerminatingCharacter(character: string): boolean {
-  return (
-    character.charCodeAt(0) > 0x7f ||
-    /\s/u.test(character) ||
-    /[<>"'`{[}\]\\^|]/u.test(character)
-  );
+interface UrlSpan {
+  start: number;
+  end: number;
 }
 
-function candidateEnd(
+function isWhitespace(character: string): boolean {
+  return /\s/u.test(character);
+}
+
+// span は URL 1つだけを含み、周囲の本文を含まない。空白を含む候補は構文の切れ目を跨いでいる。
+function urlSpan(
   markdown: string,
   start: number,
-): {
-  end: number;
-  boundary: 'terminal' | 'closing-parenthesis' | 'eof';
-} {
-  let parentheses = 0;
-  let index = start;
-  while (index < markdown.length) {
+  end: number,
+): UrlSpan | undefined {
+  if (!/^https?:\/\/\S+$/iu.test(markdown.slice(start, end))) return undefined;
+  return { start, end };
+}
+
+// 空白で終わっただけの destination はリンクだと確定できない。CommonMark では title を挟んで
+// 閉じ `)` が来て初めてリンクで、`)` が無ければ行全体が本文テキストになる。閉じ `)` を確認せずに
+// 採用すると、`[a](URL（保留）` のように URL へ密着した本文を span に含めて失う。
+function closesOnSameLine(markdown: string, from: number): boolean {
+  for (let index = from; index < markdown.length; index += 1) {
     const character = markdown[index]!;
-    if (isTerminatingCharacter(character))
-      return { end: index, boundary: 'terminal' };
+    if (character === '\n') return false;
+    if (character === ')') return true;
+  }
+  return false;
+}
+
+// CommonMark の link destination。深さ0の `)` で終端するか、閉じ `)` が同じ行に続く空白で終端する。
+function linkDestinationEnd(
+  markdown: string,
+  from: number,
+): number | undefined {
+  let depth = 0;
+  for (let index = from; index < markdown.length; index += 1) {
+    const character = markdown[index]!;
+    if (character === '\\') {
+      index += 1;
+      continue;
+    }
+    if (character === '\n') return undefined;
+    if (isWhitespace(character))
+      return closesOnSameLine(markdown, index) ? index : undefined;
     if (character === '(') {
-      parentheses += 1;
+      depth += 1;
     } else if (character === ')') {
-      if (parentheses === 0)
-        return { end: index, boundary: 'closing-parenthesis' };
-      parentheses -= 1;
+      if (depth === 0) return index;
+      depth -= 1;
+    }
+  }
+  return undefined;
+}
+
+function closingDelimiter(
+  markdown: string,
+  from: number,
+  closing: string,
+): number | undefined {
+  for (let index = from; index < markdown.length; index += 1) {
+    const character = markdown[index]!;
+    if (character === '\n') return undefined;
+    if (character === closing) return index;
+  }
+  return undefined;
+}
+
+function destinationSpan(markdown: string, from: number): UrlSpan | undefined {
+  if (markdown[from] === '<') {
+    const end = closingDelimiter(markdown, from + 1, '>');
+    return end === undefined ? undefined : urlSpan(markdown, from + 1, end);
+  }
+  const end = linkDestinationEnd(markdown, from);
+  return end === undefined ? undefined : urlSpan(markdown, from, end);
+}
+
+function spanAt(markdown: string, index: number): UrlSpan | undefined {
+  const character = markdown[index]!;
+  if (character === ']' && markdown[index + 1] === '(')
+    return destinationSpan(markdown, index + 2);
+  if (character === '<') {
+    const end = closingDelimiter(markdown, index + 1, '>');
+    return end === undefined ? undefined : urlSpan(markdown, index + 1, end);
+  }
+  if ((character === '"' || character === "'") && markdown[index - 1] === '=') {
+    const end = closingDelimiter(markdown, index + 1, character);
+    return end === undefined ? undefined : urlSpan(markdown, index + 1, end);
+  }
+  return undefined;
+}
+
+// 構文で範囲が確定する URL の span。ここに含まれない URL は本文との境界を確定できない。
+// 「入力全体が URL」は span として扱わない。空白を含まないことは URL であることを意味せず、
+// `…#preview（保留）` のように本文が密着した値を丸ごと URL とみなして本文を失うため。
+// 値が URL だと型から分かる箇所（Data Source の file.url 等）は呼び出し側で個別に扱う。
+function confirmedUrlSpans(markdown: string): UrlSpan[] {
+  const spans: UrlSpan[] = [];
+  let index = 0;
+  while (index < markdown.length) {
+    const span = spanAt(markdown, index);
+    if (span) {
+      spans.push(span);
+      index = span.end;
+      continue;
     }
     index += 1;
   }
-  return { end: index, boundary: 'eof' };
+  return spans;
 }
 
-function withoutTrailingPunctuation(value: string): string {
-  return value.replace(/[.,;:!?]+$/u, '');
+// 停止すべき URL かを判定するためだけの候補。置換には使わない。
+function unboundedCandidate(markdown: string, start: number): string {
+  let index = start;
+  while (index < markdown.length && !isWhitespace(markdown[index]!)) index += 1;
+  return markdown.slice(start, index);
 }
 
-function hasAmbiguousAsciiTail(value: string): boolean {
-  const schemeEnd = value.indexOf('://') + '://'.length;
-  const nestedStart = value.slice(schemeEnd).search(/https?:\/\//iu);
-  if (nestedStart >= 0) return true;
-  const normalized = classificationValue(value);
-  const queryStart = normalized.indexOf('?');
-  if (queryStart < 0) return false;
-  const tail = normalized.slice(queryStart + 1);
-  return tail.split('&').some((parameter) => {
-    const separator = parameter.indexOf('=');
-    if (separator <= 0) return true;
-    return /[,;]/u.test(parameter.slice(separator + 1));
-  });
+function isSignedNotionAsset(value: string): boolean {
+  return (
+    rawKnownNotionAssetHost(value) && hasClassifiedSignatureParameter(value)
+  );
 }
 
 export function replaceRetainedSignedUrls(
   markdown: string,
 ): SignedUrlReplacementResult {
-  const urlStart = /https?:\/\//giu;
+  const spans = confirmedUrlSpans(markdown);
   const output: string[] = [];
   let sourceStart = 0;
   let replacedCount = 0;
   let boundaryUndeterminedCount = 0;
   let unparseableSignedUrlCount = 0;
+
+  for (const span of spans) {
+    const value = markdown.slice(span.start, span.end);
+    const stableUrl = replacement(value);
+    if (stableUrl !== undefined) {
+      output.push(markdown.slice(sourceStart, span.start), stableUrl);
+      sourceStart = span.end;
+      replacedCount += 1;
+    } else if (isSignedNotionAsset(value)) {
+      unparseableSignedUrlCount += 1;
+    }
+  }
+
+  const urlStart = /https?:\/\//giu;
   for (
     let match = urlStart.exec(markdown);
     match;
     match = urlStart.exec(markdown)
   ) {
     const start = match.index;
-    const scanned = candidateEnd(markdown, start);
-    const scannedValue = markdown.slice(start, scanned.end);
-    const candidate = withoutTrailingPunctuation(scannedValue);
-    const end = start + candidate.length;
-    const hasProof = scanned.boundary !== 'eof';
-    const stableUrl = replacement(candidate);
-    if (
-      stableUrl !== undefined &&
-      hasProof &&
-      !hasAmbiguousAsciiTail(candidate)
-    ) {
-      output.push(markdown.slice(sourceStart, start), stableUrl);
-      sourceStart = end;
-      replacedCount += 1;
-    } else if (stableUrl !== undefined) {
+    if (spans.some((span) => start >= span.start && start < span.end)) continue;
+    const candidate = unboundedCandidate(markdown, start);
+    if (replacement(candidate) !== undefined) {
       boundaryUndeterminedCount += 1;
-    } else if (
-      rawKnownNotionAssetHost(candidate) &&
-      hasClassifiedSignatureParameter(candidate)
-    ) {
+    } else if (isSignedNotionAsset(candidate)) {
       unparseableSignedUrlCount += 1;
     }
-    urlStart.lastIndex = Math.max(scanned.end, start + match[0].length);
+    urlStart.lastIndex = start + candidate.length;
   }
+
   if (replacedCount === 0) {
     return {
       markdown,

@@ -269,7 +269,7 @@ describe('runSyncOrchestrator', () => {
       census: () => Promise.resolve(context.census),
       retrieveContent: () =>
         Promise.resolve({
-          markdown: `<table>\n${signedUrl}\n${signedUrl}`,
+          markdown: `<table>\n![a](${signedUrl})\n![b](${signedUrl})`,
           warnings: [],
           sidecars: [],
         }),
@@ -307,7 +307,7 @@ describe('runSyncOrchestrator', () => {
     expect(context.store.listWarnings(applied.runId)).toHaveLength(1);
   });
 
-  it('frontmatterのtitleに残った一時queryを安定化する', async () => {
+  it('titleに残った一時queryの範囲を確定できない場合は書き込まず安全停止する', async () => {
     const context = await fixture();
     const childId = '22222222-2222-4222-8222-222222222222';
     const signedUrl =
@@ -330,7 +330,7 @@ describe('runSyncOrchestrator', () => {
       ],
     };
 
-    const result = await runSyncOrchestrator(
+    const sync = runSyncOrchestrator(
       context.config,
       { strict: true },
       {
@@ -344,27 +344,13 @@ describe('runSyncOrchestrator', () => {
       },
     );
 
-    const localPath = context.store.getResource(childId)?.localPath;
-    if (!localPath) throw new Error('child resource was not stored');
-    const markdown = await readFile(
-      join(context.config.obsidian.managedPath, localPath),
-      'utf8',
-    );
-    expect(markdown).toContain(
-      'title: Reference https://file.notion.so/title（保留）',
-    );
-    expect(markdown).not.toContain('X-Amz-Signature');
-    expect(markdown).not.toContain('#preview');
-    expect(localPath).not.toContain('temporary');
-    expect(context.store.getResource(childId)?.title).toBe(
-      'Reference https://file.notion.so/title（保留）',
-    );
-    expect(JSON.stringify(result.actions)).not.toContain('temporary');
-    expect(
-      result.actions.filter(
-        ({ type, notionId }) => type === 'WARNING' && notionId === childId,
-      ),
-    ).toHaveLength(1);
+    await expect(sync).rejects.toMatchObject({ category: 'safety' });
+    await expect(sync).rejects.toThrow(childId);
+    await expect(sync).rejects.not.toThrow('temporary');
+    expect(context.store.listResources()).toEqual([]);
+    await expect(
+      access(join(context.config.obsidian.managedPath, 'Notes.md')),
+    ).rejects.toThrow();
   });
 
   it('境界を証明できない親titleがあるpage-id同期を安全停止する', async () => {
