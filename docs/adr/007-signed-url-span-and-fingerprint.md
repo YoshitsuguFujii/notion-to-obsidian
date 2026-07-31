@@ -34,7 +34,7 @@ Stage 35 では、構文（Markdown リンク・画像・autolink・HTML 属性�
 
 `orchestrator.ts` は Plan 段階で確定した署名 URL の置換結果と、Apply 段階（アセットダウンロード後）で再計算した置換結果が一致することを確認してから Markdown を書き込む。この一致判定を、単なる件数比較（`replacedCount` 等 3 つの数値の一致）から、置換内容の fingerprint 比較へ変更した。
 
-- 比較対象は `sourceHash`（置換元 URL の sha256）・`replacement`（置換後の値）・`context`（`markdown-link` / `markdown-image` / `autolink` / `html-attribute` / `html-rescue` / `bare-url` の構文分類）の組。
+- 置換（`Replacement`）の比較対象は `sourceHash`（置換元 URL の sha256）・`replacement`（置換後の値）・`context: ReplacementContext`（`markdown-link` / `markdown-image` / `autolink` / `html-attribute` / `html-rescue` の構文分類）の組。安全停止対象（`UnsafeOccurrence`）の比較対象は `sourceHash`・`reason`（`boundary-undetermined` / `unparseable`）・`context: UnsafeOccurrenceContext`（上記5種に加えて裸URL由来の `bare-url` を含む）の組。`bare-url` は特定の構文ノードに紐づかない裸URLの走査結果にのみ現れ、`Replacement` 側の `context` には現れない。
 - `start` / `end`（本文中の絶対位置）は比較に使わない。Plan と Apply の間でアセット処理（`applyPlannedPageAssets`）が本文の他の部分を書き換えるため、署名 URL 自体が変わっていなくても位置は正当にずれうる。
 - 同じ署名 URL が複数回現れる場合を区別できるよう、`Set` ではなく重複を保持した多重集合として、決定論的にソートしてから比較する（`replacementsMatch` / `unsafeOccurrencesMatch`）。
 - `context` を比較対象に含める理由: 元 URL の hash と置換後の値だけでは、「同じ URL が Plan では画像記法として、Apply では HTML 属性として抽出された」といった構文分類の変化を見逃す。構文分類が変わったということは抽出判断自体が変わった可能性があり、安全側に倒して不一致として扱う。
