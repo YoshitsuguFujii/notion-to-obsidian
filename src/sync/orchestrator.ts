@@ -254,7 +254,7 @@ function selectedAssetPlan(
 
 // stored 側は「そのresourceを最後に生成したときの」設定・変換ロジックのversionと比較する
 // 必要がある。現在のTRANSFORM_VERSION/API_VERSIONをそのまま注入すると自分自身との比較に
-// なり、変換ロジックやAPIバージョンを上げても既存resourceが再同期されない（D-48）。
+// なり、変換ロジックやAPIバージョンを上げても既存resourceが再同期されない。
 // provenance未設定（migration直後のNULL）は空文字列を使い、現在値と一致しないことで
 // 一度だけの安全な再生成を強制する。
 function storedFingerprint(
@@ -953,12 +953,12 @@ export async function runSyncOrchestrator(
         );
         // 純粋なMOVE（reasons が local_path のみ）は本文・frontmatterを再生成せず
         // ファイルを移動するだけなので、生成provenance（config/transform/apiのversion）を
-        // 更新しない（D-48）。MOVEと本文変更が同時に起きた場合はここが true になる。
-        const bodyRegenerated =
+        // 更新しない。MOVEと本文変更が同時に起きた場合はここが true になる。
+        const shouldRegenerateBody =
           type === 'CREATE' ||
           type === 'UPDATE' ||
           (type === 'MOVE' && item.reconciliation.reasons.length > 1);
-        if (bodyRegenerated) {
+        if (shouldRegenerateBody) {
           const assetPlan = selectedAssetPlan(item);
           if (assetPlan && dependencies.downloadAsset) {
             const processed = await applyPlannedPageAssets(
@@ -1059,7 +1059,7 @@ export async function runSyncOrchestrator(
               status: 'active',
               contentHash: item.contentHash,
               structureHash: item.structureHash,
-              ...(bodyRegenerated
+              ...(shouldRegenerateBody
                 ? {
                     generatedConfigHash: currentConfigHash,
                     generatedTransformVersion: TRANSFORM_VERSION,

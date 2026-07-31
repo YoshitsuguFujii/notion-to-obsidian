@@ -1569,7 +1569,7 @@ describe('runSyncOrchestrator', () => {
   });
 });
 
-describe('Stage 32: 生成provenance（config/transform/apiのversion）による再同期判定', () => {
+describe('生成provenance（config/transform/apiのversion）による再同期判定', () => {
   it('TRANSFORM_VERSION相当のprovenanceが古いとUPDATEになり現在値へ復元される', async () => {
     const context = await fixture();
     let run = 0;
@@ -1654,6 +1654,9 @@ describe('Stage 32: 生成provenance（config/transform/apiのversion）によ�
 
     expect(result.actions).toContainEqual(
       expect.objectContaining({ type: 'UPDATE', notionId: rootId }),
+    );
+    expect(context.store.getResource(rootId)?.generatedConfigHash).toBe(
+      created!.generatedConfigHash,
     );
   });
 

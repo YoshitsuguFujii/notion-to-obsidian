@@ -84,7 +84,7 @@ export interface ResourceState {
   trashReason?: string;
   // そのresourceのMarkdown/frontmatterを実際に生成・書き込みした時点の設定・変換ロジックの
   // provenance。現在の設定・TRANSFORM_VERSION・API_VERSIONと比較して再同期要否を判定する
-  // ために使う（D-48）。純粋なMOVE（本文を再生成しない）では更新しない。
+  // ために使う。純粋なMOVE（本文を再生成しない）では更新しない。
   generatedConfigHash?: string;
   generatedTransformVersion?: string;
   generatedApiVersion?: string;
