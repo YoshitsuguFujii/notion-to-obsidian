@@ -220,6 +220,15 @@ describe('replaceRetainedSignedUrls', () => {
     });
   });
 
+  it('開始タグが複数行にまたがる引用符付き属性値も範囲を確定する', () => {
+    const input = `<table>\n<img\n  src="${signed}">\n</table>\n`;
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: `<table>\n<img\n  src="${stable}">\n</table>\n`,
+      replacedCount: 1,
+      ...noUnsafeUrls,
+    });
+  });
+
   it('HTMLブロックに囲まれた空行区切りの画像記法は範囲を確定する', () => {
     const input = `<table><tr><td>\n\n![image](${signed})\n\n</td></tr></table>\n`;
     expect(replaceRetainedSignedUrls(input)).toEqual({

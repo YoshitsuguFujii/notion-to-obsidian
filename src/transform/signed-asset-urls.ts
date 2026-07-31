@@ -349,7 +349,9 @@ function isStartTagOpening(markdown: string, index: number): boolean {
   return next !== undefined && /[A-Za-z]/u.test(next);
 }
 
-// 開始タグの終端（引用符内の `>` はタグを終端させない）。同じ行に閉じないタグは扱わない。
+// 開始タグの終端（引用符内の `>` はタグを終端させない）。HTML の開始タグは属性が複数行に
+// またがってもよいため、タグ自体の走査は改行で打ち切らない（引用符付き属性値は
+// `closingDelimiter` により同じ行で閉じる必要がある。この制約は変えない）。
 function startTagEnd(
   markdown: string,
   tagStart: number,
@@ -358,7 +360,6 @@ function startTagEnd(
   let index = tagStart + 1;
   while (index < limit) {
     const character = markdown[index]!;
-    if (character === '\n') return undefined;
     if (character === '>') return index;
     if (character === '"' || character === "'") {
       const close = closingDelimiter(markdown, index + 1, character);
