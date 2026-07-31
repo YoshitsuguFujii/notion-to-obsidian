@@ -148,6 +148,22 @@ describe('replaceRetainedSignedUrls', () => {
   });
 
   it.each([
+    `[こちら](${signed}（保留）\n`,
+    `[a](${signed} 続き\n`,
+    `![i](${signed}\n次の行\n`,
+  ])(
+    'destinationが閉じ括弧を持たない場合は範囲を確定できず停止する: %s',
+    (input) => {
+      expect(replaceRetainedSignedUrls(input)).toEqual({
+        markdown: input,
+        replacedCount: 0,
+        boundaryUndeterminedCount: 1,
+        unparseableSignedUrlCount: 0,
+      });
+    },
+  );
+
+  it.each([
     signed,
     `${signed}（保留）`,
     `${signed}。次の文`,

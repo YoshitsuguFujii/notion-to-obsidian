@@ -154,7 +154,19 @@ function urlSpan(
   return { start, end };
 }
 
-// CommonMark の link destination。空白または深さ0の `)` で終端し、終端しなければ確定できない。
+// 空白で終わっただけの destination はリンクだと確定できない。CommonMark では title を挟んで
+// 閉じ `)` が来て初めてリンクで、`)` が無ければ行全体が本文テキストになる。閉じ `)` を確認せずに
+// 採用すると、`[a](URL（保留）` のように URL へ密着した本文を span に含めて失う。
+function closesOnSameLine(markdown: string, from: number): boolean {
+  for (let index = from; index < markdown.length; index += 1) {
+    const character = markdown[index]!;
+    if (character === '\n') return false;
+    if (character === ')') return true;
+  }
+  return false;
+}
+
+// CommonMark の link destination。深さ0の `)` で終端するか、閉じ `)` が同じ行に続く空白で終端する。
 function linkDestinationEnd(
   markdown: string,
   from: number,
@@ -166,7 +178,9 @@ function linkDestinationEnd(
       index += 1;
       continue;
     }
-    if (isWhitespace(character)) return index;
+    if (character === '\n') return undefined;
+    if (isWhitespace(character))
+      return closesOnSameLine(markdown, index) ? index : undefined;
     if (character === '(') {
       depth += 1;
     } else if (character === ')') {
