@@ -43,8 +43,26 @@ Stage 35 では、構文（Markdown リンク・画像・autolink・HTML 属性�
 
 ## 既知の制約（この ADR の範囲外）
 
-- fingerprint 検証は `applyPlannedPageAssets`（アセットのダウンロードと最終パスへの書き込み）の**後**に行われる。したがって fingerprint 不一致で安全停止しても、その時点までにアセットファイル自体は既にディスクへ書き込まれている場合がある。Markdown 本文と resource DB は更新されないため、次回同期で回復可能ではあるが、「安全停止 = ファイルシステムへの副作用ゼロ」ではない。アセットのダウンロードと commit を fingerprint 検証より後に遅延させる二段階 Apply は、独立した設計課題として tasklist へ分離する。
+- fingerprint 検証は `applyPlannedPageAssets`（アセットのダウンロードと最終パスへの書き込み）の**後**に行われる。したがって fingerprint 不一致で安全停止しても、その時点までにアセットファイル自体は既にディスクへ書き込まれている場合がある。Markdown 本文と resource DB は更新されないため、次回同期で回復可能ではあるが、「安全停止 = ファイルシステムへの副作用ゼロ」ではない。アセットのダウンロードと commit を fingerprint 検証より後に遅延させる二段階 Apply は、独立した設計課題として tasklist へ分離する。**fingerprint 比較が通常到達不能なため（下記）、この副作用が現状の自然入力で顕在化することもない。将来この分岐が到達可能になった場合に問題となる。**
 - `Replacement.start` / `end` は比較には使わないが、診断・将来のツール向けに型としては保持している。
+
+## Plan/Apply 不一致経路は現状の不変条件下では到達不能（2026-07-31・実測で確認）
+
+Apply 時の fingerprint 比較（`replacementsMatch` / `unsafeOccurrencesMatch`）を、`downloadAsset` の成否を変えるモックを使って自然な入力から不一致にできるか実測で検証した。以下の不変条件により、現状の実装では到達できないことを確認した。
+
+- **Plan 時点で unsafe（境界未確定・解析不能）が 1 件でもあれば、Apply へ進む前に停止する**（`orchestrator.ts:812` 付近。Apply 時の fingerprint 比較より前段のゲート）。実測: アセット画像記法へ密着させた裸 URL を用意したところ、Apply 時の比較に到達する前にこの Plan 時点のゲートで安全停止した。
+- **署名付きアセット URL は、Plan・Apply のいずれも `finalizePageBody` に渡る前に、ローカルパスまたは同一の安定参照（`stableReferenceUrl`）へ解決される**（`applyPlannedPageAssets` の `rewriteAssetUrls` が先に走る）。したがって `replaceRetainedSignedUrls` がアセット自身の署名付き URL を生のまま見る経路はない。
+- **ブロックに対応しない（ambiguous）候補の安定参照は Plan 時点で 1 回だけ計算され、Apply 時点でも同じ値がそのまま再利用される**（`plan.stableReferences` を Apply の `replacements` 初期値として再利用）。
+
+この 3 点により、**現状の実装では Plan/Apply の replacement fingerprint が自然入力によって不一致になる経路は無い**。ただし、これは「比較が不要」を意味しない。以下のいずれかが変われば到達可能になりうるため、fingerprint 比較は防御的な不変条件検査として保持する：
+
+- アセット URL 書き換えの順序（`rewriteAssetUrls` を `finalizePageBody` より後に動かす等）
+- `stableReferences` の生成・再利用方法（Apply 時に再計算する設計へ変える等）
+- Apply 時のアセット再取得・再マッピングのロジック
+- `finalizePageBody` が対象とする範囲の変更
+- title や property を Apply 時に再生成する設計への変更
+
+比較関数自体（`replacementsMatch` / `unsafeOccurrencesMatch`）はユニットテストで固定済みであり、`orchestrator.ts` 側の配線（不一致なら `DomainError('safety')` を投げるだけの薄い分岐）に対して、到達不能な現状の構造を無理に再現するテスト用の継ぎ目を本番コードへ追加する価値は低いと判断し、見送った。
 
 ## 影響
 
