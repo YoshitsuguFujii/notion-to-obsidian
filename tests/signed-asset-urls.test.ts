@@ -287,7 +287,7 @@ describe('replaceRetainedSignedUrls', () => {
     });
   });
 
-  it('コードフェンス内のdestinationは変換し裸URLは停止させる', () => {
+  it('コードフェンス内とinline code内のURLは停止し外側のdestinationだけ変換する', () => {
     const input = [
       '```md',
       signed,

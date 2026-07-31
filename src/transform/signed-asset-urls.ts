@@ -84,8 +84,14 @@ function decodeAmpersands(query: string): string {
 
 // 実体参照は `#` を含むため、query と fragment を切り分ける前に decode する必要がある。
 // `&#x26;` の `#` を fragment の開始と誤認すると、以降の署名parameterを見落とす。
+// path は decode しない。実体参照を解いた path を安定参照として保存すると、
+// 元の Markdown に書かれていた文字列と異なる path を出力してしまう。
 function classificationValue(value: string): string {
-  return decodeAmpersands(value);
+  const queryStart = value.indexOf('?');
+  if (queryStart < 0) return value;
+  return `${value.slice(0, queryStart + 1)}${decodeAmpersands(
+    value.slice(queryStart + 1),
+  )}`;
 }
 
 function hasClassifiedSignatureParameter(value: string): boolean {
