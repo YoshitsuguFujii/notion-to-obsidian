@@ -18,7 +18,7 @@ export type ReplacementContext =
 export type UnsafeOccurrenceContext = ReplacementContext | 'bare-url';
 
 export interface Replacement {
-  // Plan/Apply比較（fingerprintSetsMatch）では使わない（offsetはアセット処理で
+  // Plan/Apply比較（replacementsMatch）では使わない（offsetはアセット処理で
   // 正当にずれうるため）。診断・将来のツール向けに元の出現位置を保持する。
   start: number;
   end: number;
@@ -49,20 +49,6 @@ function toFingerprint({
   context,
 }: Replacement): ReplacementFingerprint {
   return { sourceHash, replacement, context };
-}
-
-interface UnsafeFingerprint {
-  sourceHash: string;
-  reason: 'boundary-undetermined' | 'unparseable';
-  context: UnsafeOccurrenceContext;
-}
-
-function toUnsafeFingerprint({
-  sourceHash,
-  reason,
-  context,
-}: UnsafeOccurrence): UnsafeFingerprint {
-  return { sourceHash, reason, context };
 }
 
 // offset は Plan/Apply 間でアセット処理により正当にずれうるため比較に使わない。
@@ -98,11 +84,13 @@ export function replacementsMatch(
 
 // Plan/Apply間で安全停止対象（境界未確定・解析不能）の集合が変わっていないかを検証する。
 // 件数だけの比較では、同数でも異なるURLが安全停止対象になったケースを見逃す。
+// UnsafeOccurrence はそれ自体が sourceHash / reason / context だけの形なので、
+// Replacement と違い start/end を除く変換は不要（UnsafeOccurrence 自体を照合値として使う）。
 export function unsafeOccurrencesMatch(
   left: readonly UnsafeOccurrence[],
   right: readonly UnsafeOccurrence[],
 ): boolean {
-  return fingerprintSetsMatch(left, right, toUnsafeFingerprint);
+  return fingerprintSetsMatch(left, right, (occurrence) => occurrence);
 }
 
 interface DestinationToken {
