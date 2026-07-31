@@ -337,6 +337,20 @@ describe('replaceRetainedSignedUrls', () => {
     });
   });
 
+  it.each([
+    `https://example.com/a](${signed}\n`,
+    `![i](https://external.example/?u=${signed})\n`,
+    `<img src="https://external.example/?u=${signed}">\n`,
+    `前段 https://example.com/a?u=${signed} 後段\n`,
+  ])('対象外URLの内側に入れ子で現れる署名URLも停止させる: %s', (input) => {
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: input,
+      replacedCount: 0,
+      boundaryUndeterminedCount: 1,
+      unparseableSignedUrlCount: 0,
+    });
+  });
+
   it('リンクテキストに置かれた裸URLは停止させる', () => {
     const input = `[${signed}](https://example.com)\n`;
     expect(replaceRetainedSignedUrls(input)).toEqual({

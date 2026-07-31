@@ -386,16 +386,20 @@ export function replaceRetainedSignedUrls(
   let boundaryUndeterminedCount = 0;
   let unparseableSignedUrlCount = 0;
 
+  const replacedSpans: UrlSpan[] = [];
+  const evaluatedStarts = new Set<number>();
   for (const span of spans) {
     // span は昇順だが重複しない保証はない（html ノードは属性値と destination を別々に集める）。
     // 重なりを許すと sourceStart が後退して出力に本文が二重に現れる。
     if (span.start < sourceStart) continue;
     const value = markdown.slice(span.start, span.end);
     const stableUrl = replacement(value);
+    evaluatedStarts.add(span.start);
     if (stableUrl !== undefined) {
       output.push(markdown.slice(sourceStart, span.start), stableUrl);
       sourceStart = span.end;
       replacedCount += 1;
+      replacedSpans.push(span);
     } else if (isSignedNotionAsset(value)) {
       unparseableSignedUrlCount += 1;
     }
@@ -408,14 +412,21 @@ export function replaceRetainedSignedUrls(
     match = urlStart.exec(markdown)
   ) {
     const start = match.index;
-    if (spans.some((span) => start >= span.start && start < span.end)) continue;
+    // 置換した span の中身は出力から消えているので見る必要がない。置換しなかった span は
+    // 本文として残るため、その内側に入れ子で現れる署名URLも判定する。
+    if (
+      evaluatedStarts.has(start) ||
+      replacedSpans.some((span) => start >= span.start && start < span.end)
+    )
+      continue;
     const candidate = unboundedCandidate(markdown, start);
     if (replacement(candidate) !== undefined) {
       boundaryUndeterminedCount += 1;
     } else if (isSignedNotionAsset(candidate)) {
       unparseableSignedUrlCount += 1;
     }
-    urlStart.lastIndex = start + candidate.length;
+    // 候補の末尾まで読み飛ばさない。`https://外部/a](https://file.notion.so/b?Signature=x`
+    // のように候補の内側へ入れ子で現れる署名URLを、外側の判定だけで素通りさせないため。
   }
 
   if (replacedCount === 0) {
