@@ -229,6 +229,15 @@ describe('replaceRetainedSignedUrls', () => {
     });
   });
 
+  it('同じタグ内の別属性値が複数行にまたがっていても署名URLの属性は範囲を確定する', () => {
+    const input = `<table>\n<img alt="line1\nline2" src="${signed}">\n</table>\n`;
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: `<table>\n<img alt="line1\nline2" src="${stable}">\n</table>\n`,
+      replacedCount: 1,
+      ...noUnsafeUrls,
+    });
+  });
+
   it('HTMLブロックに囲まれた空行区切りの画像記法は範囲を確定する', () => {
     const input = `<table><tr><td>\n\n![image](${signed})\n\n</td></tr></table>\n`;
     expect(replaceRetainedSignedUrls(input)).toEqual({

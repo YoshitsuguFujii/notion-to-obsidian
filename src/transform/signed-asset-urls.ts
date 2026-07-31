@@ -258,6 +258,21 @@ function closingDelimiter(
   return undefined;
 }
 
+// HTML の属性値は改行を含んでもよい。開始タグの終端（`>`）を見失わないためだけに使う
+// ので、値の中身は問わない。実際に置換対象として採用する span は urlSpan の `\S+` が
+// 改行を含む値を弾くため、ここで改行を許しても署名 URL の抽出範囲は変わらない。
+function closingQuoteAcrossLines(
+  markdown: string,
+  from: number,
+  closing: string,
+  limit: number,
+): number | undefined {
+  for (let index = from; index < limit; index += 1) {
+    if (markdown[index] === closing) return index;
+  }
+  return undefined;
+}
+
 // HTML ブロック内の `<table>` 救済（htmlDestinationSpans）専用。link / image ノードの
 // destination は resourceDestination token（destinationTokenSpans）を使うため、こちらは
 // AST が確定していない生 HTML の中で `](` 記法を受け入れる場合にのみ使う。
@@ -349,9 +364,11 @@ function isStartTagOpening(markdown: string, index: number): boolean {
   return next !== undefined && /[A-Za-z]/u.test(next);
 }
 
-// 開始タグの終端（引用符内の `>` はタグを終端させない）。HTML の開始タグは属性が複数行に
-// またがってもよいため、タグ自体の走査は改行で打ち切らない（引用符付き属性値は
-// `closingDelimiter` により同じ行で閉じる必要がある。この制約は変えない）。
+// 開始タグの終端（引用符内の `>` はタグを終端させない）。HTML の開始タグは属性の値が
+// 複数行にまたがってもよいため、タグ自体の走査も引用符の対応探索も改行で打ち切らない
+// （`closingQuoteAcrossLines`）。属性値そのものの抽出（attributeSpans）は同じ行で
+// 閉じる制約を維持するため、値が複数行にまたがる属性は個別に読み飛ばされるだけで、
+// 同じタグ内の他の属性（署名 URL を持つ `src` 等）まで巻き込んでタグ全体を諦めない。
 function startTagEnd(
   markdown: string,
   tagStart: number,
@@ -362,8 +379,13 @@ function startTagEnd(
     const character = markdown[index]!;
     if (character === '>') return index;
     if (character === '"' || character === "'") {
-      const close = closingDelimiter(markdown, index + 1, character);
-      if (close === undefined || close >= limit) return undefined;
+      const close = closingQuoteAcrossLines(
+        markdown,
+        index + 1,
+        character,
+        limit,
+      );
+      if (close === undefined) return undefined;
       index = close + 1;
       continue;
     }
