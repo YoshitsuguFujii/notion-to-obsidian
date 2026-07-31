@@ -361,9 +361,18 @@ function isSignedNotionAsset(value: string): boolean {
   );
 }
 
+const emptyResult = {
+  replacedCount: 0,
+  boundaryUndeterminedCount: 0,
+  unparseableSignedUrlCount: 0,
+};
+
 export function replaceRetainedSignedUrls(
   markdown: string,
 ): SignedUrlReplacementResult {
+  // URL が無ければ span も停止対象も生じない。Data Source は property 文字列ごとに
+  // 本関数を呼ぶため、そのたびに Markdown を parse しないよう先に打ち切る。
+  if (!/https?:\/\//iu.test(markdown)) return { markdown, ...emptyResult };
   const spans = confirmedUrlSpans(markdown);
   const output: string[] = [];
   let sourceStart = 0;
