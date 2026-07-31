@@ -213,7 +213,7 @@ describe('convertDataSourceProperties', () => {
     'https://file.notion.so/report.pdf?X-Amz-Signature=temporary#preview';
   const stableUrl = 'https://file.notion.so/report.pdf';
 
-  it('file URLと値全体がURLの表示文字列を安定化する', () => {
+  it('file URLを安定化し境界を証明できない表示文字列は保持する', () => {
     const externalUrl =
       'https://file.notion.so/external.pdf?X-Amz-Signature=keep';
     const properties = {
@@ -243,11 +243,11 @@ describe('convertDataSourceProperties', () => {
       properties: {
         Files: [
           { name: 'Notion file', url: 'https://cdn.example.test/file.pdf' },
-          { name: stableUrl, url: externalUrl },
+          { name: signedUrl, url: externalUrl },
         ],
       },
-      replacedCount: 2,
-      boundaryUndeterminedCount: 0,
+      replacedCount: 1,
+      boundaryUndeterminedCount: 1,
       unparseableSignedUrlCount: 0,
     });
     expect(properties).toEqual(original);
@@ -256,7 +256,6 @@ describe('convertDataSourceProperties', () => {
   it('formulaとrollupでvalueとrawへ複製されるfile URLを最終出力の出現数として数える', () => {
     const externalProtectedUrl =
       'https://file.notion.so/external.pdf?X-Amz-Signature=keep';
-    const stableExternalProtectedUrl = 'https://file.notion.so/external.pdf';
     const file = {
       type: 'file',
       file: { url: signedUrl, expiry_time: '2026-07-22T00:00:00.000Z' },
@@ -286,8 +285,8 @@ describe('convertDataSourceProperties', () => {
       'X-Amz-Signature=temporary#preview',
     );
     expect(JSON.stringify(result.properties)).toContain(externalProtectedUrl);
-    expect(result.replacedCount).toBe(8);
-    expect(result.boundaryUndeterminedCount).toBe(0);
+    expect(result.replacedCount).toBe(4);
+    expect(result.boundaryUndeterminedCount).toBe(4);
     expect(result.unparseableSignedUrlCount).toBe(0);
     expect(
       (result.properties.Formula as { raw: { array: unknown[] } }).raw.array[0],
@@ -308,11 +307,11 @@ describe('convertDataSourceProperties', () => {
       ).external,
     ).toEqual({
       url: externalProtectedUrl,
-      nested: { example: stableExternalProtectedUrl },
+      nested: { example: externalProtectedUrl },
     });
   });
 
-  it('未知shapeのrawでも値全体がURLの文字列を安定化し対象外URLは維持する', () => {
+  it('未知shapeのrawで外部URLを維持し表示値の境界未確定を数える', () => {
     const property = {
       type: 'future_type',
       future_type: {
@@ -329,8 +328,8 @@ describe('convertDataSourceProperties', () => {
 
     const result = convertDataSourceProperties({ Future: property }, new Map());
 
-    expect(result.replacedCount).toBe(4);
-    expect(result.boundaryUndeterminedCount).toBe(0);
+    expect(result.replacedCount).toBe(1);
+    expect(result.boundaryUndeterminedCount).toBe(3);
     expect(result.unparseableSignedUrlCount).toBe(0);
     expect(result.properties).toEqual({
       Future: {
@@ -345,10 +344,10 @@ describe('convertDataSourceProperties', () => {
             },
             external: {
               type: 'external',
-              name: stableUrl,
-              external: { url: signedUrl, caption: stableUrl },
+              name: signedUrl,
+              external: { url: signedUrl, caption: signedUrl },
             },
-            bare: stableUrl,
+            bare: signedUrl,
             ordinary: 'https://example.com/a?Signature=keep',
           },
         },

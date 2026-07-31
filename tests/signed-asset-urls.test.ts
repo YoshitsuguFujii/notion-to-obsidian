@@ -147,13 +147,25 @@ describe('replaceRetainedSignedUrls', () => {
     });
   });
 
-  it('入力全体がURLのみの値を変換する', () => {
-    expect(replaceRetainedSignedUrls(signed)).toEqual({
-      markdown: stable,
-      replacedCount: 1,
-      ...noUnsafeUrls,
-    });
-  });
+  it.each([
+    signed,
+    `${signed}（保留）`,
+    `${signed}。次の文`,
+    `${signed}.`,
+    'https://file.notion.so/a.png?Signature=x(note)',
+    'https://file.notion.so/a.png?Signature=x**bold**',
+    'https://file.notion.so/a.png?Signature=xnext',
+  ])(
+    '空白を含まない単一値でも構文で範囲を確定できなければ停止する: %s',
+    (input) => {
+      expect(replaceRetainedSignedUrls(input)).toEqual({
+        markdown: input,
+        replacedCount: 0,
+        boundaryUndeterminedCount: 1,
+        unparseableSignedUrlCount: 0,
+      });
+    },
+  );
 
   it.each(['.', ',', ';', ':', '!', '?'])(
     '文末記号 %s が続く裸URLは範囲を確定できず停止する',
@@ -380,29 +392,37 @@ describe('replaceRetainedSignedUrls', () => {
     });
   });
 
-  it('destinationを囲む前後の本文をbyte-for-byteで維持する', () => {
-    // 置換 span の外側が入力と一致することを、周辺文字列を変えながら固定する。
-    // 乱数は再現可能にするため線形合同法で自前生成する。
-    // scheme を偶然作らないよう、周辺文字列には英字を混ぜない。
-    const characters = [...'()[]{}<>*_`"\'=#?&,.;:!-\\/ \n\tあ、。（）【】'];
-    let seed = 20260731;
-    const nextCharacter = (): string => {
-      seed = (seed * 1103515245 + 12345) % 2147483648;
-      return characters[seed % characters.length]!;
-    };
-    const randomText = (length: number): string =>
-      Array.from({ length }, nextCharacter).join('');
+  it.each([
+    ['destination', (url: string) => `![image](${url})`],
+    ['angle destination', (url: string) => `[link](<${url}>)`],
+    ['autolink', (url: string) => `<${url}>`],
+    ['HTML属性値', (url: string) => `<img src="${url}">`],
+  ])(
+    '%s を囲む前後の本文をbyte-for-byteで維持する',
+    (_name, wrap: (url: string) => string) => {
+      // 置換 span の外側が入力と一致することを、周辺文字列を変えながら固定する。
+      // 乱数は再現可能にするため線形合同法で自前生成する（32bit に収める）。
+      // scheme を偶然作らないよう、周辺文字列には英字を混ぜない。
+      const characters = [...'()[]{}<>*_`"\'=#?&,.;:!-\\/ \n\tあ、。（）【】'];
+      let seed = 20260731;
+      const nextCharacter = (): string => {
+        seed = (Math.imul(seed, 1103515245) + 12345) >>> 1;
+        return characters[seed % characters.length]!;
+      };
+      const randomText = (length: number): string =>
+        Array.from({ length }, nextCharacter).join('');
 
-    for (let iteration = 0; iteration < 200; iteration += 1) {
-      const prefix = randomText(iteration % 17);
-      const suffix = randomText(iteration % 13);
-      const result = replaceRetainedSignedUrls(
-        `${prefix}![image](${signed})${suffix}`,
-      );
+      for (let iteration = 0; iteration < 200; iteration += 1) {
+        const prefix = randomText(iteration % 17);
+        const suffix = randomText(iteration % 13);
+        const result = replaceRetainedSignedUrls(
+          `${prefix}${wrap(signed)}${suffix}`,
+        );
 
-      expect(result.markdown).toBe(`${prefix}![image](${stable})${suffix}`);
-    }
-  });
+        expect(result.markdown).toBe(`${prefix}${wrap(stable)}${suffix}`);
+      }
+    },
+  );
 
   it('同じ変換を繰り返しても本文を変更しない', () => {
     const once = replaceRetainedSignedUrls(`![asset](${signed})`);

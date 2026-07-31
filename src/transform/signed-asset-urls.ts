@@ -215,9 +215,10 @@ function spanAt(markdown: string, index: number): UrlSpan | undefined {
 }
 
 // 構文で範囲が確定する URL の span。ここに含まれない URL は本文との境界を確定できない。
+// 「入力全体が URL」は span として扱わない。空白を含まないことは URL であることを意味せず、
+// `…#preview（保留）` のように本文が密着した値を丸ごと URL とみなして本文を失うため。
+// 値が URL だと型から分かる箇所（Data Source の file.url 等）は呼び出し側で個別に扱う。
 function confirmedUrlSpans(markdown: string): UrlSpan[] {
-  if (/^https?:\/\/\S+$/iu.test(markdown))
-    return [{ start: 0, end: markdown.length }];
   const spans: UrlSpan[] = [];
   let index = 0;
   while (index < markdown.length) {
