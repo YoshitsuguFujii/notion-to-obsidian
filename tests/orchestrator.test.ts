@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   stat,
   utimes,
@@ -1565,5 +1566,381 @@ describe('runSyncOrchestrator', () => {
     await expect(
       access(join(config.obsidian.managedPath, 'Renamed title.md')),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('Stage 32: 生成provenance（config/transform/apiのversion）による再同期判定', () => {
+  it('TRANSFORM_VERSION相当のprovenanceが古いとUPDATEになり現在値へ復元される', async () => {
+    const context = await fixture();
+    let run = 0;
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: () => Promise.resolve(context.census),
+      retrieveContent: () =>
+        Promise.resolve({ markdown: '# Body\n', warnings: [], sidecars: [] }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-transform-${++run}`,
+    };
+    await runSyncOrchestrator(context.config, {}, dependencies);
+    const created = context.store.getResource(rootId);
+    expect(created?.generatedTransformVersion).toBeTruthy();
+    context.store.upsertResource({
+      ...created!,
+      generatedTransformVersion: `${created!.generatedTransformVersion}-stale`,
+    });
+
+    const result = await runSyncOrchestrator(context.config, {}, dependencies);
+
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'UPDATE', notionId: rootId }),
+    );
+    expect(context.store.getResource(rootId)?.generatedTransformVersion).toBe(
+      created!.generatedTransformVersion,
+    );
+  });
+
+  it('API_VERSION相当のprovenanceが古いとUPDATEになる', async () => {
+    const context = await fixture();
+    let run = 0;
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: () => Promise.resolve(context.census),
+      retrieveContent: () =>
+        Promise.resolve({ markdown: '# Body\n', warnings: [], sidecars: [] }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-api-${++run}`,
+    };
+    await runSyncOrchestrator(context.config, {}, dependencies);
+    const created = context.store.getResource(rootId);
+    expect(created?.generatedApiVersion).toBeTruthy();
+    context.store.upsertResource({
+      ...created!,
+      generatedApiVersion: `${created!.generatedApiVersion}-stale`,
+    });
+
+    const result = await runSyncOrchestrator(context.config, {}, dependencies);
+
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'UPDATE', notionId: rootId }),
+    );
+    expect(context.store.getResource(rootId)?.generatedApiVersion).toBe(
+      created!.generatedApiVersion,
+    );
+  });
+
+  it('configHash相当のprovenanceが古いとUPDATEになる', async () => {
+    const context = await fixture();
+    let run = 0;
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: () => Promise.resolve(context.census),
+      retrieveContent: () =>
+        Promise.resolve({ markdown: '# Body\n', warnings: [], sidecars: [] }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-config-${++run}`,
+    };
+    await runSyncOrchestrator(context.config, {}, dependencies);
+    const created = context.store.getResource(rootId);
+    expect(created?.generatedConfigHash).toBeTruthy();
+    context.store.upsertResource({
+      ...created!,
+      generatedConfigHash: `${created!.generatedConfigHash}-stale`,
+    });
+
+    const result = await runSyncOrchestrator(context.config, {}, dependencies);
+
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'UPDATE', notionId: rootId }),
+    );
+  });
+
+  it('--page-id同期は対象外resourceのprovenanceを更新済み扱いにしない', async () => {
+    const context = await fixture();
+    const siblingId = '44444444-4444-4444-8444-444444444444';
+    const census: RootCensus = {
+      ...context.census,
+      resources: [
+        ...context.census.resources,
+        {
+          notionId: siblingId,
+          objectType: 'page',
+          title: 'Sibling',
+          parentId: rootId,
+          parentType: 'page',
+          rootId,
+          lastEditedTime: '2026-07-12T00:00:00.000Z',
+          inTrash: false,
+          url: `https://www.notion.so/${siblingId}`,
+        },
+      ],
+    };
+    let run = 0;
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: () => Promise.resolve(census),
+      retrieveContent: () =>
+        Promise.resolve({ markdown: '# Body\n', warnings: [], sidecars: [] }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-pageid-${++run}`,
+    };
+    await runSyncOrchestrator(context.config, {}, dependencies);
+    const siblingStale = `${context.store.getResource(siblingId)?.generatedTransformVersion}-stale`;
+    context.store.upsertResource({
+      ...context.store.getResource(siblingId)!,
+      generatedTransformVersion: siblingStale,
+    });
+
+    await runSyncOrchestrator(context.config, { pageId: rootId }, dependencies);
+
+    // --page-id は rootId だけを対象にするため、sibling の stale provenance は
+    // 「更新済み」に書き換わらずそのまま残る（対象外resourceを誤って移行済み扱いにしない）。
+    expect(
+      context.store.getResource(siblingId)?.generatedTransformVersion,
+    ).toBe(siblingStale);
+  });
+
+  it('--root限定同期は他rootのresourceのprovenanceを更新済み扱いにしない', async () => {
+    const context = await fixture();
+    const otherRootId = '55555555-5555-4555-8555-555555555555';
+    context.config.notion.roots = [
+      ...context.config.notion.roots,
+      { pageId: otherRootId, localName: 'Other' },
+    ];
+    const otherCensus: RootCensus = {
+      rootId: otherRootId,
+      status: 'complete',
+      deletionAllowed: true,
+      resources: [
+        {
+          notionId: otherRootId,
+          objectType: 'page',
+          title: 'Other root',
+          parentType: 'workspace',
+          rootId: otherRootId,
+          lastEditedTime: '2026-07-12T00:00:00.000Z',
+          inTrash: false,
+          url: `https://www.notion.so/${otherRootId}`,
+        },
+      ],
+      warnings: [],
+    };
+    let run = 0;
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: (pageId: string) =>
+        Promise.resolve(pageId === otherRootId ? otherCensus : context.census),
+      retrieveContent: () =>
+        Promise.resolve({ markdown: '# Body\n', warnings: [], sidecars: [] }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-root-${++run}`,
+    };
+    await runSyncOrchestrator(context.config, {}, dependencies);
+    const otherStale = `${context.store.getResource(otherRootId)?.generatedTransformVersion}-stale`;
+    context.store.upsertResource({
+      ...context.store.getResource(otherRootId)!,
+      generatedTransformVersion: otherStale,
+    });
+
+    await runSyncOrchestrator(context.config, { rootId }, dependencies);
+
+    // --root は指定rootだけを対象にするため、他rootのresourceのstale provenanceは
+    // そのまま残る（対象外resourceを誤って移行済み扱いにしない）。
+    expect(
+      context.store.getResource(otherRootId)?.generatedTransformVersion,
+    ).toBe(otherStale);
+  });
+
+  it('titleの安全停止で同期全体が失敗した場合、書き込めなかったresourceのprovenanceを更新しない', async () => {
+    const context = await fixture();
+    let run = 0;
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: () => Promise.resolve(context.census),
+      retrieveContent: () =>
+        Promise.resolve({ markdown: '# Body\n', warnings: [], sidecars: [] }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-partial-${++run}`,
+    };
+    await runSyncOrchestrator(context.config, {}, dependencies);
+    const stale = `${context.store.getResource(rootId)?.generatedTransformVersion}-stale`;
+    context.store.upsertResource({
+      ...context.store.getResource(rootId)!,
+      generatedTransformVersion: stale,
+    });
+
+    const childId = '66666666-6666-4666-8666-666666666666';
+    const signedUrl =
+      'https://file.notion.so/title?X-Amz-Signature=temporary#preview（保留）';
+    const censusWithBadTitle: RootCensus = {
+      ...context.census,
+      resources: [
+        ...context.census.resources,
+        {
+          notionId: childId,
+          objectType: 'page',
+          title: `Reference ${signedUrl}`,
+          parentId: rootId,
+          parentType: 'page',
+          rootId,
+          lastEditedTime: '2026-07-12T00:00:00.000Z',
+          inTrash: false,
+          url: `https://www.notion.so/${childId}`,
+        },
+      ],
+    };
+
+    const sync = runSyncOrchestrator(
+      context.config,
+      {},
+      { ...dependencies, census: () => Promise.resolve(censusWithBadTitle) },
+    );
+
+    await expect(sync).rejects.toMatchObject({ category: 'safety' });
+    // title の安全停止は Apply 開始前に全resourceへ及ぶため、root resource の
+    // 書き込みも行われず、staleにしたprovenanceがそのまま残る。
+    expect(context.store.getResource(rootId)?.generatedTransformVersion).toBe(
+      stale,
+    );
+  });
+
+  it('純粋なMOVEだけでは生成provenanceを変更しない', async () => {
+    const context = await fixture();
+    let run = 0;
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: () => Promise.resolve(context.census),
+      retrieveContent: () =>
+        Promise.resolve({ markdown: '# Body\n', warnings: [], sidecars: [] }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-move-only-${++run}`,
+    };
+    await runSyncOrchestrator(context.config, {}, dependencies);
+    const created = context.store.getResource(rootId);
+
+    // title・lastEditedTime・config は一切変えず、ファイルとDBのlocalPathだけを
+    // ずらす。これにより reconciliation の reasons は local_path のみになり、
+    // 本文再生成を伴わない「純粋なMOVE」を再現できる（localName 変更は configHash も
+    // 変えてしまい reasons が複数になるため使えない）。
+    const notesPath = join(context.config.obsidian.managedPath, 'Notes.md');
+    const oldPath = join(context.config.obsidian.managedPath, 'Old.md');
+    await rename(notesPath, oldPath);
+    context.store.upsertResource({ ...created!, localPath: 'Old.md' });
+    const result = await runSyncOrchestrator(context.config, {}, dependencies);
+
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'MOVE', notionId: rootId }),
+    );
+    const afterMove = context.store.getResource(rootId);
+    expect(afterMove?.generatedConfigHash).toBe(created?.generatedConfigHash);
+    expect(afterMove?.generatedTransformVersion).toBe(
+      created?.generatedTransformVersion,
+    );
+    expect(afterMove?.generatedApiVersion).toBe(created?.generatedApiVersion);
+  });
+
+  it('MOVEと本文再生成が同時に起きた場合はprovenanceを更新する', async () => {
+    const context = await fixture();
+    let run = 0;
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: () => Promise.resolve(context.census),
+      retrieveContent: () =>
+        Promise.resolve({ markdown: '# Body\n', warnings: [], sidecars: [] }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-move-update-${++run}`,
+    };
+    await runSyncOrchestrator(context.config, {}, dependencies);
+    const created = context.store.getResource(rootId);
+    context.store.upsertResource({
+      ...created!,
+      generatedTransformVersion: `${created!.generatedTransformVersion}-stale`,
+    });
+
+    // localName（パス）と title を同時に変え、MOVE + 本文再生成を誘発する。
+    context.config.notion.roots = [
+      { pageId: rootId, localName: 'Renamed Both' },
+    ];
+    const censusWithNewTitle: RootCensus = {
+      ...context.census,
+      resources: [
+        { ...context.census.resources[0]!, title: 'New remote title' },
+      ],
+    };
+
+    const result = await runSyncOrchestrator(
+      context.config,
+      {},
+      { ...dependencies, census: () => Promise.resolve(censusWithNewTitle) },
+    );
+
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'MOVE', notionId: rootId }),
+    );
+    expect(context.store.getResource(rootId)?.generatedTransformVersion).toBe(
+      created!.generatedTransformVersion,
+    );
+  });
+
+  it('migration直後のprovenance未設定resourceは一度だけ安全に再生成される', async () => {
+    const context = await fixture();
+    context.store.upsertRoot({
+      rootPageId: rootId,
+      localName: 'Notes',
+      status: 'complete',
+    });
+    // migration直後の既存行を模して generated_* を一切設定せずに resource を作る。
+    context.store.upsertResource({
+      notionId: rootId,
+      objectType: 'page',
+      rootId,
+      title: 'Remote title',
+      localPath: 'Notes.md',
+      expectedPath: 'Notes.md',
+      resolvedFilename: 'Notes',
+      lastEditedTime: '2026-07-12T00:00:00.000Z',
+      inTrash: false,
+      status: 'active',
+      contentHash: 'legacy-hash',
+      structureHash: 'legacy-structure',
+      missingCount: 0,
+      createdAt: '2026-07-12T00:00:00.000Z',
+      updatedAt: '2026-07-12T00:00:00.000Z',
+    });
+    expect(
+      context.store.getResource(rootId)?.generatedTransformVersion,
+    ).toBeUndefined();
+
+    let run = 0;
+    const dependencies = {
+      store: context.store,
+      lock: context.lock,
+      census: () => Promise.resolve(context.census),
+      retrieveContent: () =>
+        Promise.resolve({ markdown: '# Body\n', warnings: [], sidecars: [] }),
+      now: () => '2026-07-12T01:00:00.000Z',
+      runId: () => `run-legacy-migrate-${++run}`,
+    };
+
+    const result = await runSyncOrchestrator(context.config, {}, dependencies);
+
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ type: 'UPDATE', notionId: rootId }),
+    );
+    expect(
+      context.store.getResource(rootId)?.generatedTransformVersion,
+    ).toBeTruthy();
+
+    const second = await runSyncOrchestrator(context.config, {}, dependencies);
+    expect(second.actions).toContainEqual(
+      expect.objectContaining({ type: 'UNCHANGED', notionId: rootId }),
+    );
   });
 });

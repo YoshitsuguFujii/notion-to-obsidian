@@ -190,10 +190,12 @@ export class SqliteStateStore implements StateStore, Disposable {
           (notion_id, object_type, root_id, parent_id, title, local_path, expected_path,
            resolved_filename, last_edited_time, last_seen_run_id, in_trash, status,
            content_hash, structure_hash, missing_count, tombstoned_at, trash_reason,
+           generated_config_hash, generated_transform_version, generated_api_version,
            created_at, updated_at)
          VALUES (@notionId, @objectType, @rootId, @parentId, @title, @localPath, @expectedPath,
            @resolvedFilename, @lastEditedTime, @lastSeenRunId, @inTrash, @status,
            @contentHash, @structureHash, COALESCE(@missingCount, 0), @tombstonedAt, @trashReason,
+           @generatedConfigHash, @generatedTransformVersion, @generatedApiVersion,
            @createdAt, @updatedAt)
          ON CONFLICT(notion_id) DO UPDATE SET
            object_type = excluded.object_type,
@@ -212,6 +214,9 @@ export class SqliteStateStore implements StateStore, Disposable {
            missing_count = COALESCE(@missingCount, resources.missing_count),
            tombstoned_at = COALESCE(@tombstonedAt, resources.tombstoned_at),
            trash_reason = COALESCE(@trashReason, resources.trash_reason),
+           generated_config_hash = COALESCE(@generatedConfigHash, resources.generated_config_hash),
+           generated_transform_version = COALESCE(@generatedTransformVersion, resources.generated_transform_version),
+           generated_api_version = COALESCE(@generatedApiVersion, resources.generated_api_version),
            updated_at = excluded.updated_at`,
       )
       .run({
@@ -225,6 +230,9 @@ export class SqliteStateStore implements StateStore, Disposable {
         missingCount: resource.missingCount ?? null,
         tombstonedAt: resource.tombstonedAt ?? null,
         trashReason: resource.trashReason ?? null,
+        generatedConfigHash: resource.generatedConfigHash ?? null,
+        generatedTransformVersion: resource.generatedTransformVersion ?? null,
+        generatedApiVersion: resource.generatedApiVersion ?? null,
       });
   }
   updateResourceMissingState(
@@ -275,6 +283,18 @@ export class SqliteStateStore implements StateStore, Disposable {
         ? { tombstonedAt: row.tombstoned_at as string }
         : {}),
       ...(row.trash_reason ? { trashReason: row.trash_reason as string } : {}),
+      ...(row.generated_config_hash
+        ? { generatedConfigHash: row.generated_config_hash as string }
+        : {}),
+      ...(row.generated_transform_version
+        ? {
+            generatedTransformVersion:
+              row.generated_transform_version as string,
+          }
+        : {}),
+      ...(row.generated_api_version
+        ? { generatedApiVersion: row.generated_api_version as string }
+        : {}),
     };
   }
   listResources(): StoredResource[] {

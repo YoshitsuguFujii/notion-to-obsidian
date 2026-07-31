@@ -252,18 +252,21 @@ function selectedAssetPlan(
   };
 }
 
+// stored 側は「そのresourceを最後に生成したときの」設定・変換ロジックのversionと比較する
+// 必要がある。現在のTRANSFORM_VERSION/API_VERSIONをそのまま注入すると自分自身との比較に
+// なり、変換ロジックやAPIバージョンを上げても既存resourceが再同期されない（D-48）。
+// provenance未設定（migration直後のNULL）は空文字列を使い、現在値と一致しないことで
+// 一度だけの安全な再生成を強制する。
 function storedFingerprint(
   stored: StoredResource | undefined,
-  currentConfigHash: string,
-  previousConfigHash: string | undefined,
   assets: readonly AssetState[],
 ): Parameters<typeof reconcileResource>[0] {
   if (!stored) return undefined;
   return {
     ...stored,
-    configHash: previousConfigHash ?? currentConfigHash,
-    transformVersion: TRANSFORM_VERSION,
-    apiVersion: API_VERSION,
+    configHash: stored.generatedConfigHash ?? '',
+    transformVersion: stored.generatedTransformVersion ?? '',
+    apiVersion: stored.generatedApiVersion ?? '',
     assetFingerprint: assetFingerprint(assets),
   };
 }
@@ -277,7 +280,6 @@ export async function runSyncOrchestrator(
   const runId = dependencies.runId();
   const startedAt = dependencies.now();
   const currentConfigHash = configHash(config);
-  const previousRun = dependencies.store.getLatestRun();
   const counts = zeroCounts();
   const actions: OrchestratedAction[] = [];
   let beganRun = false;
@@ -641,8 +643,6 @@ export async function runSyncOrchestrator(
         let reconciliation = reconcileResource(
           storedFingerprint(
             stored,
-            currentConfigHash,
-            previousRun?.configHash,
             existingAssets.filter(({ pageId }) => pageId === resource.notionId),
           ),
           fingerprint,
@@ -951,11 +951,14 @@ export async function runSyncOrchestrator(
           config.obsidian.managedPath,
           item.path.expectedPath,
         );
-        if (
+        // 純粋なMOVE（reasons が local_path のみ）は本文・frontmatterを再生成せず
+        // ファイルを移動するだけなので、生成provenance（config/transform/apiのversion）を
+        // 更新しない（D-48）。MOVEと本文変更が同時に起きた場合はここが true になる。
+        const bodyRegenerated =
           type === 'CREATE' ||
           type === 'UPDATE' ||
-          (type === 'MOVE' && item.reconciliation.reasons.length > 1)
-        ) {
+          (type === 'MOVE' && item.reconciliation.reasons.length > 1);
+        if (bodyRegenerated) {
           const assetPlan = selectedAssetPlan(item);
           if (assetPlan && dependencies.downloadAsset) {
             const processed = await applyPlannedPageAssets(
@@ -1056,6 +1059,13 @@ export async function runSyncOrchestrator(
               status: 'active',
               contentHash: item.contentHash,
               structureHash: item.structureHash,
+              ...(bodyRegenerated
+                ? {
+                    generatedConfigHash: currentConfigHash,
+                    generatedTransformVersion: TRANSFORM_VERSION,
+                    generatedApiVersion: API_VERSION,
+                  }
+                : {}),
               missingCount: 0,
               createdAt: item.stored?.createdAt ?? startedAt,
               updatedAt: startedAt,

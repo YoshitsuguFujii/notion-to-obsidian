@@ -88,7 +88,7 @@ describe('SqliteStateStore', () => {
   it('全状態テーブルと最新migrationを作成する', () => {
     using store = new SqliteStateStore(':memory:');
 
-    expect(store.schemaVersion()).toBe(2);
+    expect(store.schemaVersion()).toBe(3);
     expect(store.tableNames()).toEqual(
       expect.arrayContaining([
         'schema_migrations',
@@ -146,6 +146,9 @@ describe('SqliteStateStore', () => {
       'trash_reason',
       'created_at',
       'updated_at',
+      'generated_config_hash',
+      'generated_transform_version',
+      'generated_api_version',
     ]);
     expect(store.tableColumns('assets')).toEqual([
       'stable_key',
@@ -204,7 +207,7 @@ describe('SqliteStateStore', () => {
     try {
       using store = new SqliteStateStore(fixture.path);
 
-      expect(store.schemaVersion()).toBe(2);
+      expect(store.schemaVersion()).toBe(3);
       expect(store.getAsset('page:block')).toMatchObject({
         cacheStatus: 'usable',
       });
@@ -221,7 +224,7 @@ describe('SqliteStateStore', () => {
       new SqliteStateStore(fixture.path).close();
       using reopened = new SqliteStateStore(fixture.path);
 
-      expect(reopened.schemaVersion()).toBe(2);
+      expect(reopened.schemaVersion()).toBe(3);
       expect(reopened.getAsset('page:block')).toMatchObject({
         cacheStatus: 'usable',
       });
@@ -258,6 +261,104 @@ describe('SqliteStateStore', () => {
       }
     } finally {
       await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('resourceの生成provenanceを保存して読み戻す', () => {
+    using store = new SqliteStateStore(':memory:');
+    store.upsertRoot({
+      rootPageId: 'root',
+      localName: 'Root',
+      status: 'complete',
+    });
+    store.upsertResource({
+      notionId: 'page',
+      objectType: 'page',
+      rootId: 'root',
+      title: 'Page',
+      expectedPath: 'Page.md',
+      resolvedFilename: 'Page',
+      lastEditedTime: '2026-07-20T00:00:00.000Z',
+      inTrash: false,
+      status: 'active',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      updatedAt: '2026-07-20T00:00:00.000Z',
+      generatedConfigHash: 'config-1',
+      generatedTransformVersion: '5',
+      generatedApiVersion: '2026-03-11',
+    });
+
+    expect(store.getResource('page')).toMatchObject({
+      generatedConfigHash: 'config-1',
+      generatedTransformVersion: '5',
+      generatedApiVersion: '2026-03-11',
+    });
+  });
+
+  it('provenanceを省略したupsertは既存のprovenanceを変更しない', () => {
+    using store = new SqliteStateStore(':memory:');
+    store.upsertRoot({
+      rootPageId: 'root',
+      localName: 'Root',
+      status: 'complete',
+    });
+    store.upsertResource({
+      notionId: 'page',
+      objectType: 'page',
+      rootId: 'root',
+      title: 'Page',
+      expectedPath: 'Page.md',
+      resolvedFilename: 'Page',
+      lastEditedTime: '2026-07-20T00:00:00.000Z',
+      inTrash: false,
+      status: 'active',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      updatedAt: '2026-07-20T00:00:00.000Z',
+      generatedConfigHash: 'config-1',
+      generatedTransformVersion: '5',
+      generatedApiVersion: '2026-03-11',
+    });
+
+    // 純粋なMOVEを想定: provenanceフィールドを渡さずに再upsertする。
+    store.upsertResource({
+      notionId: 'page',
+      objectType: 'page',
+      rootId: 'root',
+      title: 'Page',
+      expectedPath: 'Renamed.md',
+      resolvedFilename: 'Page',
+      lastEditedTime: '2026-07-20T00:00:00.000Z',
+      inTrash: false,
+      status: 'active',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      updatedAt: '2026-07-21T00:00:00.000Z',
+    });
+
+    expect(store.getResource('page')).toMatchObject({
+      expectedPath: 'Renamed.md',
+      generatedConfigHash: 'config-1',
+      generatedTransformVersion: '5',
+      generatedApiVersion: '2026-03-11',
+    });
+  });
+
+  it('version 1の既存resourceはprovenance未設定として移行される', async () => {
+    const fixture = await versionOneDatabase();
+    try {
+      using store = new SqliteStateStore(fixture.path);
+
+      expect(store.schemaVersion()).toBe(3);
+      expect(store.getResource('page')).not.toHaveProperty(
+        'generatedConfigHash',
+      );
+      expect(store.getResource('page')).not.toHaveProperty(
+        'generatedTransformVersion',
+      );
+      expect(store.getResource('page')).not.toHaveProperty(
+        'generatedApiVersion',
+      );
+    } finally {
+      await rm(fixture.directory, { recursive: true, force: true });
     }
   });
 });
