@@ -137,6 +137,18 @@ describe('replaceRetainedSignedUrls', () => {
     });
   });
 
+  it('リンクテキストに画像を含む入れ子でも内側と外側のdestinationをそれぞれ変換する', () => {
+    const innerSigned =
+      'https://file.notion.so/inner.png?X-Amz-Signature=inner-signature';
+    const innerStable = 'https://file.notion.so/inner.png';
+    const input = `[![inner](${innerSigned})](${signed})\n`;
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: `[![inner](${innerStable})](${stable})\n`,
+      replacedCount: 2,
+      ...noUnsafeUrls,
+    });
+  });
+
   it('destinationのtitleを残してURLだけを変換する', () => {
     expect(
       replaceRetainedSignedUrls(`![image](${signed} "caption")\n`),
