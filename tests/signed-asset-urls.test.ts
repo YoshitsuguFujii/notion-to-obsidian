@@ -195,6 +195,41 @@ describe('replaceRetainedSignedUrls', () => {
   });
 
   it.each([
+    `前段\n[x](https://example.com "caption ](${signed}(note))")\n後段\n`,
+    `前段\n\n<script>\nconst x="${signed}(note)";\n</script>\n\n後段\n`,
+    `前段\n\n<!-- memo="${signed}" -->\n\n後段\n`,
+    `前段\n\n<table>\n[note] foo](${signed}(note))\n</table>\n\n後段\n`,
+  ])(
+    '構文に見えるだけで開始タグにもリンクにも属さないURLは範囲を確定しない: %s',
+    (input) => {
+      expect(replaceRetainedSignedUrls(input)).toEqual({
+        markdown: input,
+        replacedCount: 0,
+        boundaryUndeterminedCount: 1,
+        unparseableSignedUrlCount: 0,
+      });
+    },
+  );
+
+  it('titleに`](`を含むリンクでもdestinationだけを変換する', () => {
+    const input = `前段\n[x](${signed} "caption ](https://example.com/b)")\n後段\n`;
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: `前段\n[x](${stable} "caption ](https://example.com/b)")\n後段\n`,
+      replacedCount: 1,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it('HTMLブロックに囲まれた空行区切りの画像記法は範囲を確定する', () => {
+    const input = `<table><tr><td>\n\n![image](${signed})\n\n</td></tr></table>\n`;
+    expect(replaceRetainedSignedUrls(input)).toEqual({
+      markdown: `<table><tr><td>\n\n![image](${stable})\n\n</td></tr></table>\n`,
+      replacedCount: 1,
+      ...noUnsafeUrls,
+    });
+  });
+
+  it.each([
     '<img src="https://file.notion.so/a?foo=1&#38;X-Amz-Signature=secret">',
     '<img src="https://file.notion.so/a?foo=1&#x26;X-Amz-Signature=secret">',
   ])('HTML属性の数値文字参照で区切られた署名keyを検出する: %s', (input) => {
