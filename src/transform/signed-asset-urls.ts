@@ -1,7 +1,107 @@
+import { createHash } from 'node:crypto';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import { stableReferenceUrl } from './stable-url.js';
+
+// 構文別に置換 span を確定した経路のタグ。Plan/Apply比較で「同じ件数でも別の構文分類から
+// 置換された」ケースを検出するために使う（本文中の位置は Plan/Apply 間でアセット処理の
+// 影響を受けてずれうるため、offset ではなく構文分類を比較対象に含める）。
+export type ReplacementContext =
+  | 'markdown-link'
+  | 'markdown-image'
+  | 'autolink'
+  | 'html-attribute'
+  | 'html-rescue';
+
+// 裸URLの走査は特定の構文ノードに紐づかないため、context を持たない。
+export type UnsafeOccurrenceContext = ReplacementContext | 'bare-url';
+
+export interface Replacement {
+  start: number;
+  end: number;
+  sourceHash: string;
+  replacement: string;
+  context: ReplacementContext;
+}
+
+export interface UnsafeOccurrence {
+  sourceHash: string;
+  reason: 'boundary-undetermined' | 'unparseable';
+  context: UnsafeOccurrenceContext;
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+interface ReplacementFingerprint {
+  sourceHash: string;
+  replacement: string;
+  context: ReplacementContext;
+}
+
+function toFingerprint({
+  sourceHash,
+  replacement,
+  context,
+}: Replacement): ReplacementFingerprint {
+  return { sourceHash, replacement, context };
+}
+
+interface UnsafeFingerprint {
+  sourceHash: string;
+  reason: 'boundary-undetermined' | 'unparseable';
+  context: UnsafeOccurrenceContext;
+}
+
+function toUnsafeFingerprint({
+  sourceHash,
+  reason,
+  context,
+}: UnsafeOccurrence): UnsafeFingerprint {
+  return { sourceHash, reason, context };
+}
+
+// offset は Plan/Apply 間でアセット処理により正当にずれうるため比較に使わない。
+// 同じ署名URLが複数回現れる場合を区別できるよう、多重集合として（重複を保持したまま）
+// 決定論的にソートして比較する。
+function canonicalize<T>(
+  items: readonly T[],
+  toFingerprintOf: (item: T) => unknown,
+): string[] {
+  return items.map((item) => JSON.stringify(toFingerprintOf(item))).sort();
+}
+
+function fingerprintSetsMatch<T>(
+  left: readonly T[],
+  right: readonly T[],
+  toFingerprintOf: (item: T) => unknown,
+): boolean {
+  const leftCanonical = canonicalize(left, toFingerprintOf);
+  const rightCanonical = canonicalize(right, toFingerprintOf);
+  if (leftCanonical.length !== rightCanonical.length) return false;
+  return leftCanonical.every((value, index) => value === rightCanonical[index]);
+}
+
+// Plan で確定した置換内容と Apply で再計算した置換内容が一致するかを検証する。
+// 件数だけの比較（旧実装）では「同じ件数だが別のURLを置換した」を検出できないため、
+// 置換元URLのhash・置換後の値・構文分類の多重集合を比較する。
+export function replacementsMatch(
+  left: readonly Replacement[],
+  right: readonly Replacement[],
+): boolean {
+  return fingerprintSetsMatch(left, right, toFingerprint);
+}
+
+// Plan/Apply間で安全停止対象（境界未確定・解析不能）の集合が変わっていないかを検証する。
+// 件数だけの比較では、同数でも異なるURLが安全停止対象になったケースを見逃す。
+export function unsafeOccurrencesMatch(
+  left: readonly UnsafeOccurrence[],
+  right: readonly UnsafeOccurrence[],
+): boolean {
+  return fingerprintSetsMatch(left, right, toUnsafeFingerprint);
+}
 
 interface DestinationToken {
   start: { offset: number };
@@ -68,6 +168,8 @@ export interface SignedUrlReplacementResult {
   replacedCount: number;
   boundaryUndeterminedCount: number;
   unparseableSignedUrlCount: number;
+  replacements: Replacement[];
+  unsafe: UnsafeOccurrence[];
 }
 
 function isDomain(hostname: string, domain: string): boolean {
@@ -192,6 +294,12 @@ function replacement(value: string): string | undefined {
 interface UrlSpan {
   start: number;
   end: number;
+}
+
+// UrlSpan に構文分類を添えたもの。境界計算そのものは構文を問わないため UrlSpan のまま
+// 行い、置換候補として上位へ返す段階でだけ context を付与する。
+interface ContextualSpan extends UrlSpan {
+  context: ReplacementContext;
 }
 
 function isWhitespace(character: string): boolean {
@@ -330,14 +438,15 @@ function ownDestinationToken(
 function linkNodeSpan(
   markdown: string,
   node: MarkdownNode,
-): UrlSpan | undefined {
+): ContextualSpan | undefined {
   const start = node.position!.start.offset!;
   const end = node.position!.end.offset!;
   // autolink `<https://…>`。GFM の literal autolink（生の URL がそのままリンクになる形）は
   // 終端規則が本文の密着を判別できないため、`<` で始まるものだけを構文として認める。
   if (markdown[start] === '<') {
     if (markdown[end - 1] !== '>') return undefined;
-    return urlSpan(markdown, start + 1, end - 1);
+    const span = urlSpan(markdown, start + 1, end - 1);
+    return span ? { ...span, context: 'autolink' } : undefined;
   }
   const token = ownDestinationToken(
     start,
@@ -345,9 +454,13 @@ function linkNodeSpan(
     descendantLinkOrImageRanges(node),
   );
   if (!token) return undefined;
-  if (markdown[token.start] === '<' && markdown[token.end - 1] === '>')
-    return urlSpan(markdown, token.start + 1, token.end - 1);
-  return urlSpan(markdown, token.start, token.end);
+  const context: ReplacementContext =
+    node.type === 'image' ? 'markdown-image' : 'markdown-link';
+  const span =
+    markdown[token.start] === '<' && markdown[token.end - 1] === '>'
+      ? urlSpan(markdown, token.start + 1, token.end - 1)
+      : urlSpan(markdown, token.start, token.end);
+  return span ? { ...span, context } : undefined;
 }
 
 function isEscaped(markdown: string, index: number): boolean {
@@ -401,8 +514,8 @@ function attributeSpans(
   markdown: string,
   start: number,
   end: number,
-): UrlSpan[] {
-  const spans: UrlSpan[] = [];
+): ContextualSpan[] {
+  const spans: ContextualSpan[] = [];
   let index = start;
   while (index < end) {
     if (markdown[index] !== '<' || !isStartTagOpening(markdown, index)) {
@@ -424,7 +537,7 @@ function attributeSpans(
       const close = closingDelimiter(markdown, cursor + 1, character);
       if (close === undefined || close >= tagEnd) continue;
       const span = urlSpan(markdown, cursor + 1, close);
-      if (span) spans.push(span);
+      if (span) spans.push({ ...span, context: 'html-attribute' });
       cursor = close;
     }
     index = tagEnd + 1;
@@ -462,21 +575,21 @@ function htmlDestinationSpans(
   markdown: string,
   start: number,
   end: number,
-): UrlSpan[] {
-  const spans: UrlSpan[] = [];
+): ContextualSpan[] {
+  const spans: ContextualSpan[] = [];
   for (let index = start; index + 1 < end; index += 1) {
     if (markdown[index] !== ']' || markdown[index + 1] !== '(') continue;
     if (isEscaped(markdown, index)) continue;
     if (!hasMatchingOpeningBracketOnLine(markdown, index, start)) continue;
     const span = destinationSpan(markdown, index + 2, end);
     if (!span) continue;
-    spans.push(span);
+    spans.push({ ...span, context: 'html-rescue' });
     index = span.end;
   }
   return spans;
 }
 
-function nodeSpans(markdown: string, node: MarkdownNode): UrlSpan[] {
+function nodeSpans(markdown: string, node: MarkdownNode): ContextualSpan[] {
   const start = node.position?.start.offset;
   const end = node.position?.end.offset;
   if (start === undefined || end === undefined) return [];
@@ -496,8 +609,8 @@ function nodeSpans(markdown: string, node: MarkdownNode): UrlSpan[] {
 // 位置から取るので、`foo](URL)` のようにリンクとして成立しない記号列は span にならない。
 // コードフェンス・inline code の内側にはこれらのノードが現れないため、そこの URL は
 // すべて範囲未確定として停止する。stringify は行わないので WikiLink は壊れない。
-function confirmedUrlSpans(markdown: string): UrlSpan[] {
-  const spans: UrlSpan[] = [];
+function confirmedUrlSpans(markdown: string): ContextualSpan[] {
+  const spans: ContextualSpan[] = [];
   const collect = (node: MarkdownNode): void => {
     spans.push(...nodeSpans(markdown, node));
     for (const child of node.children ?? []) collect(child);
@@ -530,6 +643,8 @@ const emptyResult = {
   replacedCount: 0,
   boundaryUndeterminedCount: 0,
   unparseableSignedUrlCount: 0,
+  replacements: [],
+  unsafe: [],
 };
 
 export function replaceRetainedSignedUrls(
@@ -541,9 +656,8 @@ export function replaceRetainedSignedUrls(
   const spans = confirmedUrlSpans(markdown);
   const output: string[] = [];
   let sourceStart = 0;
-  let replacedCount = 0;
-  let boundaryUndeterminedCount = 0;
-  let unparseableSignedUrlCount = 0;
+  const replacements: Replacement[] = [];
+  const unsafe: UnsafeOccurrence[] = [];
 
   const replacedSpans: UrlSpan[] = [];
   const evaluatedStarts = new Set<number>();
@@ -557,10 +671,20 @@ export function replaceRetainedSignedUrls(
     if (stableUrl !== undefined) {
       output.push(markdown.slice(sourceStart, span.start), stableUrl);
       sourceStart = span.end;
-      replacedCount += 1;
+      replacements.push({
+        start: span.start,
+        end: span.end,
+        sourceHash: sha256(value),
+        replacement: stableUrl,
+        context: span.context,
+      });
       replacedSpans.push(span);
     } else if (isSignedNotionAsset(value)) {
-      unparseableSignedUrlCount += 1;
+      unsafe.push({
+        sourceHash: sha256(value),
+        reason: 'unparseable',
+        context: span.context,
+      });
     }
   }
 
@@ -580,13 +704,29 @@ export function replaceRetainedSignedUrls(
       continue;
     const candidate = unboundedCandidate(markdown, start);
     if (replacement(candidate) !== undefined) {
-      boundaryUndeterminedCount += 1;
+      unsafe.push({
+        sourceHash: sha256(candidate),
+        reason: 'boundary-undetermined',
+        context: 'bare-url',
+      });
     } else if (isSignedNotionAsset(candidate)) {
-      unparseableSignedUrlCount += 1;
+      unsafe.push({
+        sourceHash: sha256(candidate),
+        reason: 'unparseable',
+        context: 'bare-url',
+      });
     }
     // 候補の末尾まで読み飛ばさない。`https://外部/a](https://file.notion.so/b?Signature=x`
     // のように候補の内側へ入れ子で現れる署名URLを、外側の判定だけで素通りさせないため。
   }
+
+  const replacedCount = replacements.length;
+  const boundaryUndeterminedCount = unsafe.filter(
+    ({ reason }) => reason === 'boundary-undetermined',
+  ).length;
+  const unparseableSignedUrlCount = unsafe.filter(
+    ({ reason }) => reason === 'unparseable',
+  ).length;
 
   if (replacedCount === 0) {
     return {
@@ -594,6 +734,8 @@ export function replaceRetainedSignedUrls(
       replacedCount,
       boundaryUndeterminedCount,
       unparseableSignedUrlCount,
+      replacements,
+      unsafe,
     };
   }
   output.push(markdown.slice(sourceStart));
@@ -602,5 +744,7 @@ export function replaceRetainedSignedUrls(
     replacedCount,
     boundaryUndeterminedCount,
     unparseableSignedUrlCount,
+    replacements,
+    unsafe,
   };
 }

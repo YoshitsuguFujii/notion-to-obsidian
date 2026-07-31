@@ -52,7 +52,11 @@ import {
 } from '../transform/obsidian-links.js';
 import {
   replaceRetainedSignedUrls,
+  replacementsMatch,
+  unsafeOccurrencesMatch,
+  type Replacement,
   type SignedUrlReplacementResult,
+  type UnsafeOccurrence,
 } from '../transform/signed-asset-urls.js';
 import { planMissingResources } from './deletion-guard.js';
 import { allocateOutputPaths } from './output-path-allocator.js';
@@ -143,6 +147,8 @@ interface PlannedContent {
   bodyReplacedCount: number;
   bodyBoundaryUndeterminedCount: number;
   bodyUnparseableSignedUrlCount: number;
+  bodyReplacements: Replacement[];
+  bodyUnsafe: UnsafeOccurrence[];
   frontmatterTitle: string;
   contentHash: string;
   structureHash: string;
@@ -576,6 +582,8 @@ export async function runSyncOrchestrator(
           finalizedBody.boundaryUndeterminedCount;
         const bodyUnparseableSignedUrlCount =
           finalizedBody.unparseableSignedUrlCount;
+        const bodyReplacements = finalizedBody.replacements;
+        const bodyUnsafe = finalizedBody.unsafe;
         const contentHash = hash(body);
         const structureHash = hash(
           JSON.stringify({
@@ -687,6 +695,8 @@ export async function runSyncOrchestrator(
           bodyReplacedCount,
           bodyBoundaryUndeterminedCount,
           bodyUnparseableSignedUrlCount,
+          bodyReplacements,
+          bodyUnsafe,
           frontmatterTitle: finalizedTitle.markdown,
           contentHash,
           structureHash,
@@ -971,12 +981,15 @@ export async function runSyncOrchestrator(
               idToPath,
               true,
             );
+            // 件数だけの比較では「同じ件数でも別のURLを置換した」を見逃す。置換元URLのhash・
+            // 置換後の値・構文分類の多重集合で比較する（offsetはアセット処理で正当にずれうる
+            // ため比較対象に含めない）。
             if (
-              finalizedBody.replacedCount !== item.bodyReplacedCount ||
-              finalizedBody.boundaryUndeterminedCount !==
-                item.bodyBoundaryUndeterminedCount ||
-              finalizedBody.unparseableSignedUrlCount !==
-                item.bodyUnparseableSignedUrlCount
+              !replacementsMatch(
+                finalizedBody.replacements,
+                item.bodyReplacements,
+              ) ||
+              !unsafeOccurrencesMatch(finalizedBody.unsafe, item.bodyUnsafe)
             ) {
               throw new DomainError(
                 'safety',

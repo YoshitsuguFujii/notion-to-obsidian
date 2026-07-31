@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { replaceRetainedSignedUrls } from '../src/transform/signed-asset-urls.js';
+import {
+  replaceRetainedSignedUrls,
+  replacementsMatch,
+} from '../src/transform/signed-asset-urls.js';
 
 const signed =
   'https://file.notion.so/document.png?X-Amz-Signature=test-signature#temporary';
 const stable = 'https://file.notion.so/document.png';
+const another = 'https://cdn.notion-static.com/another.pdf?Expires=123';
 
 const noUnsafeUrls = {
   boundaryUndeterminedCount: 0,
@@ -23,7 +27,7 @@ describe('replaceRetainedSignedUrls', () => {
   ])('構文境界で終わるNotion由来の一時URLを安定参照へ変換する: %s', (url) => {
     const result = replaceRetainedSignedUrls(`![asset](${url})`);
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       markdown: `![asset](${new URL(url).origin + new URL(url).pathname})`,
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -41,7 +45,7 @@ describe('replaceRetainedSignedUrls', () => {
     'https://user:password@file.notion.so/file.png?Signature=value',
     '../_assets/file.png?Signature=value',
   ])('対象外のURLを変更も安全停止対象にも含めない: %s', (url) => {
-    expect(replaceRetainedSignedUrls(url)).toEqual({
+    expect(replaceRetainedSignedUrls(url)).toMatchObject({
       markdown: url,
       replacedCount: 0,
       ...noUnsafeUrls,
@@ -53,7 +57,7 @@ describe('replaceRetainedSignedUrls', () => {
       replaceRetainedSignedUrls(
         '![asset](HTTPS://FILE.NOTION.SO/file.png?x-amz-signature=value)',
       ),
-    ).toEqual({
+    ).toMatchObject({
       markdown: '![asset](https://file.notion.so/file.png)',
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -65,7 +69,7 @@ describe('replaceRetainedSignedUrls', () => {
       replaceRetainedSignedUrls(
         '![asset](https://file.notion.so:443/file.png?Signature=value)',
       ),
-    ).toEqual({
+    ).toMatchObject({
       markdown: '![asset](https://file.notion.so/file.png)',
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -75,7 +79,7 @@ describe('replaceRetainedSignedUrls', () => {
   it('percent encodeされた署名keyと重複keyを検出する', () => {
     const input =
       '![asset](https://file.notion.so/file.png?ignored=1&%58-Amz-Signature=&X-Amz-Signature=second)';
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: '![asset](https://file.notion.so/file.png)',
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -99,7 +103,7 @@ describe('replaceRetainedSignedUrls', () => {
       replaceRetainedSignedUrls(
         `![asset](https://file.notion.so/file.png?${parameter}=)`,
       ),
-    ).toEqual({
+    ).toMatchObject({
       markdown: '![asset](https://file.notion.so/file.png)',
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -109,7 +113,7 @@ describe('replaceRetainedSignedUrls', () => {
   it('HTML entityで区切られた署名keyを検出して周辺HTMLを維持する', () => {
     const input =
       '<img src="https://file.notion.so/file.png?name=a&amp;X-Amz-Signature=value">';
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: '<img src="https://file.notion.so/file.png">',
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -124,7 +128,7 @@ describe('replaceRetainedSignedUrls', () => {
       `<img src='${signed}'>`,
       `<img src="${signed}">`,
     ].join('\n');
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: [
         `![image](${stable})`,
         `[link](<${stable}>)`,
@@ -142,7 +146,7 @@ describe('replaceRetainedSignedUrls', () => {
       'https://file.notion.so/inner.png?X-Amz-Signature=inner-signature';
     const innerStable = 'https://file.notion.so/inner.png';
     const input = `[![inner](${innerSigned})](${signed})\n`;
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: `[![inner](${innerStable})](${stable})\n`,
       replacedCount: 2,
       ...noUnsafeUrls,
@@ -152,7 +156,7 @@ describe('replaceRetainedSignedUrls', () => {
   it('destinationのtitleを残してURLだけを変換する', () => {
     expect(
       replaceRetainedSignedUrls(`![image](${signed} "caption")\n`),
-    ).toEqual({
+    ).toMatchObject({
       markdown: `![image](${stable} "caption")\n`,
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -161,7 +165,7 @@ describe('replaceRetainedSignedUrls', () => {
 
   it('HTMLブロックの内側でも開き括弧と閉じ括弧が揃う画像記法は範囲を確定する', () => {
     const input = `<table>\n![image](${signed})\n`;
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: `<table>\n![image](${stable})\n`,
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -175,7 +179,7 @@ describe('replaceRetainedSignedUrls', () => {
   ])(
     'HTMLブロック内でも開き括弧か閉じ括弧を欠く記法は範囲を確定しない: %s',
     (input) => {
-      expect(replaceRetainedSignedUrls(input)).toEqual({
+      expect(replaceRetainedSignedUrls(input)).toMatchObject({
         markdown: input,
         replacedCount: 0,
         boundaryUndeterminedCount: 1,
@@ -186,7 +190,7 @@ describe('replaceRetainedSignedUrls', () => {
 
   it('HTMLブロックの引用符付き属性値は範囲を確定する', () => {
     const input = `<table>\n<img src="${signed}">\n`;
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: `<table>\n<img src="${stable}">\n`,
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -198,7 +202,7 @@ describe('replaceRetainedSignedUrls', () => {
     `\\[label](${signed}(note))\n`,
     ['```text', `foo](${signed}(note))`, '```', ''].join('\n'),
   ])('Markdownリンクとして成立しない`](`は範囲を確定しない: %s', (input) => {
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: input,
       replacedCount: 0,
       boundaryUndeterminedCount: 1,
@@ -214,7 +218,7 @@ describe('replaceRetainedSignedUrls', () => {
   ])(
     '構文に見えるだけで開始タグにもリンクにも属さないURLは範囲を確定しない: %s',
     (input) => {
-      expect(replaceRetainedSignedUrls(input)).toEqual({
+      expect(replaceRetainedSignedUrls(input)).toMatchObject({
         markdown: input,
         replacedCount: 0,
         boundaryUndeterminedCount: 1,
@@ -225,7 +229,7 @@ describe('replaceRetainedSignedUrls', () => {
 
   it('titleに`](`を含むリンクでもdestinationだけを変換する', () => {
     const input = `前段\n[x](${signed} "caption ](https://example.com/b)")\n後段\n`;
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: `前段\n[x](${stable} "caption ](https://example.com/b)")\n後段\n`,
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -234,7 +238,7 @@ describe('replaceRetainedSignedUrls', () => {
 
   it('開始タグが複数行にまたがる引用符付き属性値も範囲を確定する', () => {
     const input = `<table>\n<img\n  src="${signed}">\n</table>\n`;
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: `<table>\n<img\n  src="${stable}">\n</table>\n`,
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -243,7 +247,7 @@ describe('replaceRetainedSignedUrls', () => {
 
   it('同じタグ内の別属性値が複数行にまたがっていても署名URLの属性は範囲を確定する', () => {
     const input = `<table>\n<img alt="line1\nline2" src="${signed}">\n</table>\n`;
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: `<table>\n<img alt="line1\nline2" src="${stable}">\n</table>\n`,
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -252,7 +256,7 @@ describe('replaceRetainedSignedUrls', () => {
 
   it('HTMLブロックに囲まれた空行区切りの画像記法は範囲を確定する', () => {
     const input = `<table><tr><td>\n\n![image](${signed})\n\n</td></tr></table>\n`;
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: `<table><tr><td>\n\n![image](${stable})\n\n</td></tr></table>\n`,
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -263,7 +267,7 @@ describe('replaceRetainedSignedUrls', () => {
     '<img src="https://file.notion.so/a?foo=1&#38;X-Amz-Signature=secret">',
     '<img src="https://file.notion.so/a?foo=1&#x26;X-Amz-Signature=secret">',
   ])('HTML属性の数値文字参照で区切られた署名keyを検出する: %s', (input) => {
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: '<img src="https://file.notion.so/a">',
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -277,7 +281,7 @@ describe('replaceRetainedSignedUrls', () => {
   ])(
     'destinationが閉じ括弧を持たない場合は範囲を確定できず停止する: %s',
     (input) => {
-      expect(replaceRetainedSignedUrls(input)).toEqual({
+      expect(replaceRetainedSignedUrls(input)).toMatchObject({
         markdown: input,
         replacedCount: 0,
         boundaryUndeterminedCount: 1,
@@ -297,7 +301,7 @@ describe('replaceRetainedSignedUrls', () => {
   ])(
     '空白を含まない単一値でも構文で範囲を確定できなければ停止する: %s',
     (input) => {
-      expect(replaceRetainedSignedUrls(input)).toEqual({
+      expect(replaceRetainedSignedUrls(input)).toMatchObject({
         markdown: input,
         replacedCount: 0,
         boundaryUndeterminedCount: 1,
@@ -310,7 +314,7 @@ describe('replaceRetainedSignedUrls', () => {
     '文末記号 %s が続く裸URLは範囲を確定できず停止する',
     (punctuation) => {
       const input = `${signed}${punctuation} `;
-      expect(replaceRetainedSignedUrls(input)).toEqual({
+      expect(replaceRetainedSignedUrls(input)).toMatchObject({
         markdown: input,
         replacedCount: 0,
         boundaryUndeterminedCount: 1,
@@ -322,7 +326,7 @@ describe('replaceRetainedSignedUrls', () => {
   it('URL path内の括弧を保持してMarkdownの閉じ括弧だけをURL外に残す', () => {
     const input =
       '![image](https://file.notion.so/folder/(draft)/file.png?Signature=value)';
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: '![image](https://file.notion.so/folder/(draft)/file.png)',
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -334,7 +338,7 @@ describe('replaceRetainedSignedUrls', () => {
       replaceRetainedSignedUrls(
         '![image](https://file.notion.so./file.png?Signature=value)',
       ),
-    ).toEqual({
+    ).toMatchObject({
       markdown: '![image](https://file.notion.so./file.png)',
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -344,7 +348,7 @@ describe('replaceRetainedSignedUrls', () => {
   it('hostnameの末尾dotを持つ解析不能URLをNotion由来として安全停止対象にする', () => {
     const input = 'https://file.notion.so./file.png?Signature=% ';
 
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: input,
       replacedCount: 0,
       boundaryUndeterminedCount: 0,
@@ -363,7 +367,7 @@ describe('replaceRetainedSignedUrls', () => {
       `![image](${signed})`,
       '',
     ].join('\n');
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: [
         '```md',
         signed,
@@ -394,7 +398,7 @@ describe('replaceRetainedSignedUrls', () => {
     '}',
   ])('本文が密着する裸URLは置換せず停止する: %s', (trailing) => {
     const input = `前段 ${signed}${trailing} 後段\n`;
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: input,
       replacedCount: 0,
       boundaryUndeterminedCount: 1,
@@ -408,7 +412,7 @@ describe('replaceRetainedSignedUrls', () => {
     `<img src="https://external.example/?u=${signed}">\n`,
     `前段 https://example.com/a?u=${signed} 後段\n`,
   ])('対象外URLの内側に入れ子で現れる署名URLも停止させる: %s', (input) => {
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: input,
       replacedCount: 0,
       boundaryUndeterminedCount: 1,
@@ -418,7 +422,7 @@ describe('replaceRetainedSignedUrls', () => {
 
   it('リンクテキストに置かれた裸URLは停止させる', () => {
     const input = `[${signed}](https://example.com)\n`;
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: input,
       replacedCount: 0,
       boundaryUndeterminedCount: 1,
@@ -428,7 +432,7 @@ describe('replaceRetainedSignedUrls', () => {
 
   it('destinationに置かれた非ASCII pathの署名URLを変換する', () => {
     const input = '![image](https://file.notion.so/画像.png?Signature=value)\n';
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: '![image](https://file.notion.so/%E7%94%BB%E5%83%8F.png)\n',
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -437,7 +441,7 @@ describe('replaceRetainedSignedUrls', () => {
 
   it('裸の非ASCII pathの署名URLを見逃さず停止させる', () => {
     const input = '前段 https://file.notion.so/画像.png?Signature=value です\n';
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: input,
       replacedCount: 0,
       boundaryUndeterminedCount: 1,
@@ -448,7 +452,7 @@ describe('replaceRetainedSignedUrls', () => {
   it('空白で区切られた複数の裸URLをそれぞれ停止対象に数える', () => {
     const another = 'https://cdn.notion-static.com/another.pdf?Expires=123';
     const input = `${signed} ${another} `;
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: input,
       replacedCount: 0,
       boundaryUndeterminedCount: 2,
@@ -466,7 +470,7 @@ describe('replaceRetainedSignedUrls', () => {
       '',
     ].join('\n');
 
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: [
         `![a](${stable})`,
         `![b](${stable})`,
@@ -483,7 +487,7 @@ describe('replaceRetainedSignedUrls', () => {
     const input =
       '![image](https://file.notion.so/document.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=example%2F20260730%2Fregion%2Fs3%2Faws4_request&X-Amz-Date=20260730T000000Z&X-Amz-Expires=3600&X-Amz-Security-Token=placeholder&X-Amz-Signature=placeholder&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject)';
 
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: '![image](https://file.notion.so/document.png)',
       replacedCount: 1,
       ...noUnsafeUrls,
@@ -496,7 +500,7 @@ describe('replaceRetainedSignedUrls', () => {
     `${signed}&redirect=https://example.com `,
     `${signed};https://example.com `,
   ])('構文で範囲を確定できないNotion URLは変更しない: %s', (input) => {
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: input,
       replacedCount: 0,
       boundaryUndeterminedCount: 1,
@@ -510,7 +514,7 @@ describe('replaceRetainedSignedUrls', () => {
   ])(
     '既知Notion hostで解釈できない署名URLは安全停止対象にする: %s',
     (input) => {
-      expect(replaceRetainedSignedUrls(input)).toEqual({
+      expect(replaceRetainedSignedUrls(input)).toMatchObject({
         markdown: input,
         replacedCount: 0,
         boundaryUndeterminedCount: 0,
@@ -526,7 +530,7 @@ describe('replaceRetainedSignedUrls', () => {
     'https://notion.so.evil.example/file.png?Signature=value ',
     'https://file.notion.so:8443/file.png?Signature=value ',
   ])('既知Notion hostと識別できないURLは安全停止対象にしない: %s', (input) => {
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: input,
       replacedCount: 0,
       ...noUnsafeUrls,
@@ -536,7 +540,7 @@ describe('replaceRetainedSignedUrls', () => {
   it('署名parameter名の部分一致では安全停止対象にしない', () => {
     const input =
       'https://file.notion.so/file.png?fooX-Amz-Signaturebar=value ';
-    expect(replaceRetainedSignedUrls(input)).toEqual({
+    expect(replaceRetainedSignedUrls(input)).toMatchObject({
       markdown: input,
       replacedCount: 0,
       ...noUnsafeUrls,
@@ -593,7 +597,7 @@ describe('replaceRetainedSignedUrls', () => {
     const once = replaceRetainedSignedUrls(input);
     expect(once.replacedCount).toBe(1);
 
-    expect(replaceRetainedSignedUrls(once.markdown)).toEqual({
+    expect(replaceRetainedSignedUrls(once.markdown)).toMatchObject({
       markdown: once.markdown,
       replacedCount: 0,
       ...noUnsafeUrls,
@@ -604,10 +608,123 @@ describe('replaceRetainedSignedUrls', () => {
     const once = replaceRetainedSignedUrls(`![asset](${signed})`);
     const twice = replaceRetainedSignedUrls(once.markdown);
 
-    expect(twice).toEqual({
+    expect(twice).toMatchObject({
       markdown: once.markdown,
       replacedCount: 0,
       ...noUnsafeUrls,
+    });
+  });
+
+  describe('replacements / unsafe（Plan/Apply比較用のfingerprint情報）', () => {
+    it.each([
+      ['markdown-image', `![image](${signed})`],
+      ['markdown-link', `[link](${signed})`],
+      ['autolink', `<${signed}>`],
+      ['html-attribute', `<img src="${signed}">`],
+      ['html-rescue', `<table>\n![image](${signed})\n`],
+    ] as const)(
+      '構文 %s から確定した置換に対応する context を記録する',
+      (context, input) => {
+        const result = replaceRetainedSignedUrls(input);
+        expect(result.replacements).toEqual([
+          expect.objectContaining({
+            context,
+            replacement: stable,
+          }),
+        ]);
+        expect(result.unsafe).toEqual([]);
+      },
+    );
+
+    it('置換したsourceHashは元URLから決定論的に導出される', () => {
+      const first = replaceRetainedSignedUrls(`![a](${signed})`);
+      const second = replaceRetainedSignedUrls(`![b](${signed})`);
+      expect(first.replacements[0]!.sourceHash).toBe(
+        second.replacements[0]!.sourceHash,
+      );
+      expect(first.replacements[0]!.sourceHash).not.toBe(signed);
+    });
+
+    it('境界未確定の裸URLはcontext bare-urlでunsafeへ記録される', () => {
+      const input = `前段 ${signed}(note) 後段\n`;
+      const result = replaceRetainedSignedUrls(input);
+      expect(result.replacements).toEqual([]);
+      expect(result.unsafe).toEqual([
+        expect.objectContaining({
+          reason: 'boundary-undetermined',
+          context: 'bare-url',
+        }),
+      ]);
+    });
+
+    it('解析不能な既知Notion署名URLはcontext付きでunsafeへ記録される', () => {
+      const input = `<img src="https://file.notion.so/file.png?Signature=%">`;
+      const result = replaceRetainedSignedUrls(input);
+      expect(result.replacements).toEqual([]);
+      expect(result.unsafe).toEqual([
+        expect.objectContaining({
+          reason: 'unparseable',
+          context: 'html-attribute',
+        }),
+      ]);
+    });
+  });
+
+  describe('replacementsMatch（Plan/Apply比較）', () => {
+    it('同じ置換内容なら出現順が違っても一致する', () => {
+      const planned = replaceRetainedSignedUrls(
+        [`![a](${signed})`, `![b](${another})`].join('\n'),
+      );
+      const applied = replaceRetainedSignedUrls(
+        [`![b](${another})`, `![a](${signed})`].join('\n'),
+      );
+      expect(
+        replacementsMatch(planned.replacements, applied.replacements),
+      ).toBe(true);
+    });
+
+    it('offsetが変わっても内容が同じなら一致する（アセット処理による正当な位置ズレを許容）', () => {
+      const planned = replaceRetainedSignedUrls(`![a](${signed})`);
+      const applied = replaceRetainedSignedUrls(
+        `前置きの文章\n![a](${signed})`,
+      );
+      expect(
+        replacementsMatch(planned.replacements, applied.replacements),
+      ).toBe(true);
+    });
+
+    it('件数が同じでも異なるURLを置換していれば不一致にする', () => {
+      const planned = replaceRetainedSignedUrls(
+        [`![a](${signed})`, `![b](${another})`].join('\n'),
+      );
+      const applied = replaceRetainedSignedUrls(
+        [`![a](${signed})`, `![b](${signed})`].join('\n'),
+      );
+      expect(
+        replacementsMatch(planned.replacements, applied.replacements),
+      ).toBe(false);
+    });
+
+    it('同じURLでも構文分類が変われば不一致にする', () => {
+      const planned = replaceRetainedSignedUrls(`![a](${signed})`);
+      const applied = replaceRetainedSignedUrls(`<img src="${signed}">`);
+      expect(
+        replacementsMatch(planned.replacements, applied.replacements),
+      ).toBe(false);
+    });
+
+    it('件数が異なれば不一致にする', () => {
+      const planned = replaceRetainedSignedUrls(`![a](${signed})`);
+      const applied = replaceRetainedSignedUrls(
+        [`![a](${signed})`, `![b](${another})`].join('\n'),
+      );
+      expect(
+        replacementsMatch(planned.replacements, applied.replacements),
+      ).toBe(false);
+    });
+
+    it('空配列同士は一致する', () => {
+      expect(replacementsMatch([], [])).toBe(true);
     });
   });
 });
