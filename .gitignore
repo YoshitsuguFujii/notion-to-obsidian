@@ -25,3 +25,4 @@ node_modules/
 .steering/
 .claude/settings.local.json
 .codex/
+next
