@@ -23,6 +23,30 @@ function firstDestinationUrl(markdown: string): string | undefined {
   return found;
 }
 
+// 最初の link ノードのラベルが単一の text ノードとして残っているか（emphasis/
+// strikethrough等のインライン構文へ分解されていないか）を確認する。分解されていれば
+// undefined を返す。
+function firstLinkLabelPlainText(markdown: string): string | undefined {
+  const tree = unified().use(remarkParse).use(remarkGfm).parse(markdown);
+  let visited = false;
+  let found: string | undefined;
+  const visit = (node: Nodes): void => {
+    if (visited) return;
+    if (node.type === 'link') {
+      visited = true;
+      const [only] = node.children;
+      found =
+        node.children.length === 1 && only?.type === 'text'
+          ? only.value
+          : undefined;
+      return;
+    }
+    if ('children' in node) node.children.forEach(visit);
+  };
+  visit(tree);
+  return found;
+}
+
 describe('rewriteAssetUrls', () => {
   it('対応済みimage/file URLだけをローカルPOSIX参照へ変換する', async () => {
     const markdown = [
@@ -164,7 +188,7 @@ describe('rewriteAssetUrls', () => {
       new Map([[url, localPath]]),
     );
 
-    expect(result).toBe(`[${localPath}](${localPath})`);
+    expect(result).toBe(`[\\_assets/page/photo.png](${localPath})`);
     expect(result).not.toContain(url);
   });
 
@@ -193,7 +217,7 @@ describe('rewriteAssetUrls', () => {
     );
 
     expect(result).toBe(
-      '[_assets/page/photo\\[draft\\].png](_assets/page/photo[draft].png)',
+      '[\\_assets/page/photo\\[draft\\].png](_assets/page/photo[draft].png)',
     );
   });
 
@@ -207,7 +231,35 @@ describe('rewriteAssetUrls', () => {
       new Map([[url, localPath]]),
     );
 
-    expect(result).toBe('[_assets/page/a\\`b.png](_assets/page/a`b.png)');
+    expect(result).toBe('[\\_assets/page/a\\`b.png](_assets/page/a`b.png)');
+    expect(firstDestinationUrl(result)).toBe(localPath);
+  });
+
+  it('autolinkの置換でアンダースコアを含むローカルパスが強調記法として解釈されない', async () => {
+    const url = 'https://files.example/photo.png?signature=temporary';
+    const markdown = `<${url}>`;
+    const localPath = '_assets/page/foo_bar_.png';
+
+    const result = await rewriteAssetUrls(
+      markdown,
+      new Map([[url, localPath]]),
+    );
+
+    expect(firstLinkLabelPlainText(result)).toBe(localPath);
+    expect(firstDestinationUrl(result)).toBe(localPath);
+  });
+
+  it('autolinkの置換でチルダを含むローカルパスが取り消し線として解釈されない', async () => {
+    const url = 'https://files.example/photo.png?signature=temporary';
+    const markdown = `<${url}>`;
+    const localPath = '_assets/page/foo~~draft~~.png';
+
+    const result = await rewriteAssetUrls(
+      markdown,
+      new Map([[url, localPath]]),
+    );
+
+    expect(firstLinkLabelPlainText(result)).toBe(localPath);
     expect(firstDestinationUrl(result)).toBe(localPath);
   });
 
@@ -221,7 +273,7 @@ describe('rewriteAssetUrls', () => {
       new Map([[url, localPath]]),
     );
 
-    expect(result).toBe(`[${localPath}](<${localPath}>)`);
+    expect(result).toBe(`[\\_assets/page/photo copy.png](<${localPath}>)`);
   });
 
   it.each([

@@ -162,13 +162,15 @@ function formatDestination(destination: string): string {
 // テキストに残すと、後段の replaceRetainedSignedUrls（signed-asset-urls.ts）の裸URL
 // fallback 走査が `[署名URL](path)` を boundary-undetermined として検出し、
 // orchestrator.ts の safety 停止（安全不変条件11）により sync run 全体が中断するため。
-// ローカルパスは `[` `]` `&` `` ` `` を禁止文字にしない（sanitizePathSegment）ため、
-// リンクラベルとして成立させるためにエスケープする。`&` を落とすと destination は
+// ローカルパスは `[` `]` `&` `` ` `` `_` `~` を禁止文字にしない（sanitizePathSegment）
+// ため、リンクラベルとして成立させるためにエスケープする。`&` を落とすと destination は
 // 正しいままテキストの見た目だけ `a&copy;.png` が `a©.png` として表示され実ファイル名と
 // 食い違う。`` ` `` を落とすと inline code として解釈され `](` を含む形ではリンク構文
 // 自体が壊れる（`[a\`b.png](a\`b.png)` が `[a` + code span + `b.png)` に分解される）。
+// `_` を落とすと emphasis、`~` を落とすと（remarkGfm の）strikethrough として解釈され、
+// 表示テキストが実ファイル名と食い違う。
 function escapeLinkLabel(text: string): string {
-  return text.replaceAll(/[\\[\]&`]/gu, (character) => `\\${character}`);
+  return text.replaceAll(/[\\[\]&`_~]/gu, (character) => `\\${character}`);
 }
 
 export function rewriteAssetUrls(
