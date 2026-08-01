@@ -70,10 +70,15 @@ function wikiAlias(value: string): string {
     .replaceAll(']', '\\]');
 }
 
-function wikiLink(expectedPath: string, label: string): Nodes {
+function wikiLink(
+  expectedPath: string,
+  label: string,
+  insideTableCell: boolean,
+): Nodes {
   const path = wikiPath(expectedPath);
   const alias = wikiAlias(label.trim() || path.split('/').at(-1) || path);
-  return { type: 'html', value: `[[${path}|${alias}]]` };
+  const delimiter = insideTableCell ? '\\|' : '|';
+  return { type: 'html', value: `[[${path}${delimiter}${alias}]]` };
 }
 
 function nodeText(node: Nodes): string {
@@ -142,6 +147,7 @@ function pageElementTag(value: string): PageElementTag | undefined {
 function completePageElement(
   value: string,
   paths: ReadonlyMap<string, string>,
+  insideTableCell: boolean,
 ): Nodes | undefined {
   const trimmed = value.trim();
   const tag = pageElementTag(trimmed);
@@ -154,12 +160,13 @@ function completePageElement(
   if (!path) return undefined;
   const body = trimmed.slice(openingEnd + 1, closingStart);
   const parsed = unified().use(remarkParse).parse(body);
-  return wikiLink(path, nodeText(parsed));
+  return wikiLink(path, nodeText(parsed), insideTableCell);
 }
 
 function transformParent(
   parent: Parent,
   paths: ReadonlyMap<string, string>,
+  insideTableCell = false,
 ): void {
   const children = parent.children as Nodes[];
   const transformed: Nodes[] = [];
@@ -169,12 +176,12 @@ function transformParent(
     if (child.type === 'link') {
       const path = resolveUrl(child.url, paths);
       if (path) {
-        transformed.push(wikiLink(path, nodeText(child)));
+        transformed.push(wikiLink(path, nodeText(child), insideTableCell));
         continue;
       }
     }
     if (child.type === 'html') {
-      const complete = completePageElement(child.value, paths);
+      const complete = completePageElement(child.value, paths, insideTableCell);
       if (complete) {
         transformed.push(complete);
         continue;
@@ -193,14 +200,18 @@ function transformParent(
             .slice(index + 1, closingIndex)
             .map(nodeText)
             .join('');
-          transformed.push(wikiLink(path, label));
+          transformed.push(wikiLink(path, label, insideTableCell));
           index = closingIndex;
           continue;
         }
       }
     }
     if ('children' in child && Array.isArray(child.children)) {
-      transformParent(child, paths);
+      transformParent(
+        child,
+        paths,
+        insideTableCell || child.type === 'tableCell',
+      );
     }
     transformed.push(child);
   }

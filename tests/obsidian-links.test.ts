@@ -148,4 +148,48 @@ describe('resolveInternalLinks', () => {
       ),
     ).resolves.toBe('[[Database/Row|Related row]]\n');
   });
+
+  it('GFM テーブルのセル内 link は、区切りの | をエスケープした WikiLink へ変換する（テーブルの列が壊れないように）', async () => {
+    const markdown = [
+      '| Name | Related |',
+      '| --- | --- |',
+      '| Alice | [Page](https://www.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) |',
+    ].join('\n');
+
+    const result = await resolveInternalLinks(
+      markdown,
+      new Map([['aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Internal.md']]),
+    );
+
+    expect(result).toContain('[[Internal\\|Page]]');
+    expect(result.trim().split('\n')).toHaveLength(3);
+  });
+
+  it('GFM テーブルのセル内 mention-page も、区切りの | をエスケープした WikiLink へ変換する', async () => {
+    const markdown = [
+      '| Name | Related |',
+      '| --- | --- |',
+      '| Alice | <mention-page url="https://www.notion.so/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb">Mention</mention-page> |',
+    ].join('\n');
+
+    const result = await resolveInternalLinks(
+      markdown,
+      new Map([['bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'Mentioned.md']]),
+    );
+
+    expect(result).toContain('[[Mentioned\\|Mention]]');
+    expect(result.trim().split('\n')).toHaveLength(3);
+  });
+
+  it('テーブル外の link は従来どおりエスケープしない WikiLink へ変換する', async () => {
+    const markdown =
+      '[Page](https://www.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)';
+
+    await expect(
+      resolveInternalLinks(
+        markdown,
+        new Map([['aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Internal.md']]),
+      ),
+    ).resolves.toBe('[[Internal|Page]]\n');
+  });
 });
