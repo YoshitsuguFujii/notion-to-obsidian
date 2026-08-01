@@ -9,7 +9,7 @@ Notion の Enhanced Markdown には標準 Markdown に加え、callout、columns
 
 ## 決定
 
-`unified`、`remark-parse`、`remark-gfm`、`remark-stringify` を使用する。標準 Markdown は mdast の parse/stringify に委ね、Notion 固有の callout と columns は remark が生成した HTML node だけを限定的に変換する。toggle と未知 HTML は情報保持のためそのまま残す。
+`unified`、`remark-parse`、`remark-gfm`、`remark-stringify` を使用する。標準 Markdown は mdast の parse/stringify に委ね、Notion 固有の callout・columns・HTML table は remark が生成した HTML node だけを限定的に変換する（table は colspan/rowspan 等の変換不能な形を検出した場合のみ、情報保持のため生 HTML のまま残す）。toggle と未知 HTML は情報保持のためそのまま残す。
 
 Markdown API の `<unknown>` 位置確認にも remark AST を使い、code block と inline code 内の同名文字列を placeholder と誤認しない。
 
