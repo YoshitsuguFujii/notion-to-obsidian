@@ -69,7 +69,9 @@ import {
 
 const API_VERSION = '2026-03-11';
 const TOOL_VERSION = '0.1.0';
-const TRANSFORM_VERSION = '5';
+// v6: rewriteAssetUrls の destination `&` エスケープ追加と autolink の通常リンク形式
+// への変換により、これらの構文を含むページの生成物が変わる。
+const TRANSFORM_VERSION = '6';
 function signedUrlSafetyMessage(notionIds: ReadonlySet<string>): string {
   return `Cannot safely process retained Notion signed asset URLs on page ID(s): ${[...notionIds].sort().join(', ')}. One or more URLs could not be parsed, or their extent could not be determined from the surrounding syntax. A URL is only safe to process inside a Markdown link or image destination, an autolink such as <URL>, or a quoted HTML attribute; a bare URL is not, even when it is the whole value. In Notion, put the URL into one of those forms, then run sync --dry-run to verify the correction before syncing. Inside a code block, inline code, a page title, or a database property, none of those forms are available; remove the signed URL from that value or exclude the page from the sync instead.`;
 }
