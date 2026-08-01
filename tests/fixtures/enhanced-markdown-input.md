@@ -46,6 +46,8 @@ Second column
 | --- | --- |
 | 1   | 2   |
 
+<table header-row="true"><tr><td>Fruit</td><td>Count</td></tr><tr><td>Apple</td><td>3</td></tr></table>
+
 <table><tr><th>Raw</th></tr><tr><td>HTML table</td></tr></table>
 
 ![Alt](https://example.com/image.png)

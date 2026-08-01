@@ -147,4 +147,102 @@ describe('Block API fallback', () => {
       expect.objectContaining({ type: 'ambiguous_unknown_positions' }),
     );
   });
+
+  it('has_column_header: true の table ブロックを、先頭行をヘッダーとした Markdown テーブルへ変換する', () => {
+    const tableNode = {
+      block: block('table1', 'table', { has_column_header: true }, true),
+      children: [
+        {
+          block: block('row1', 'table_row', {
+            cells: [richText('Name'), richText('Score')],
+          }),
+          children: [],
+        },
+        {
+          block: block('row2', 'table_row', {
+            cells: [richText('Alice'), richText('90')],
+          }),
+          children: [],
+        },
+      ],
+    };
+
+    const result = renderFallbackBlocks([tableNode]);
+
+    expect(result.markdown).toBe(
+      '| Name | Score |\n| --- | --- |\n| Alice | 90 |',
+    );
+  });
+
+  it('has_column_header: false の table ブロックは、空のヘッダー行を合成した Markdown テーブルへ変換する', () => {
+    const tableNode = {
+      block: block('table1', 'table', { has_column_header: false }, true),
+      children: [
+        {
+          block: block('row1', 'table_row', {
+            cells: [richText('Alice'), richText('90')],
+          }),
+          children: [],
+        },
+      ],
+    };
+
+    const result = renderFallbackBlocks([tableNode]);
+
+    expect(result.markdown).toBe('|  |  |\n| --- | --- |\n| Alice | 90 |');
+  });
+
+  it('セル内の改行（shift+enter）を <br> へ変換し行を壊さない', () => {
+    const tableNode = {
+      block: block('table1', 'table', { has_column_header: true }, true),
+      children: [
+        {
+          block: block('row1', 'table_row', {
+            cells: [richText('Name'), richText('Note')],
+          }),
+          children: [],
+        },
+        {
+          block: block('row2', 'table_row', {
+            cells: [richText('Alice'), richText('Line one\nLine two')],
+          }),
+          children: [],
+        },
+      ],
+    };
+
+    const result = renderFallbackBlocks([tableNode]);
+
+    expect(result.markdown).toBe(
+      '| Name | Note |\n| --- | --- |\n| Alice | Line one<br>Line two |',
+    );
+  });
+
+  it('列数が行間で不一致な table ブロックは変換せず unsupported として保全する', () => {
+    const tableNode = {
+      block: block('table1', 'table', { has_column_header: true }, true),
+      children: [
+        {
+          block: block('row1', 'table_row', {
+            cells: [richText('Name'), richText('Score')],
+          }),
+          children: [],
+        },
+        {
+          block: block('row2', 'table_row', { cells: [richText('Alice')] }),
+          children: [],
+        },
+      ],
+    };
+
+    const result = renderFallbackBlocks([tableNode]);
+
+    expect(result.markdown).toContain('[Unsupported block: table]');
+    const sidecar = result.sidecars.find(
+      (entry) => entry.type === 'table' && entry.id === 'table1',
+    );
+    expect(sidecar).toBeDefined();
+    const payload = sidecar?.payload as { rows: Array<{ id: string }> };
+    expect(payload.rows.map((row) => row.id)).toEqual(['row1', 'row2']);
+  });
 });

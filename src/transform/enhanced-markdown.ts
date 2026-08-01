@@ -4,6 +4,7 @@ import { unified, type Plugin } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkStringify from 'remark-stringify';
+import { buildMarkdownTableText } from './table-markdown.js';
 
 function attributeValue(openingTag: string, name: string): string | undefined {
   let offset = 0;
@@ -102,6 +103,38 @@ function columnsMarkdown(value: string): string | undefined {
   return output.join('\n');
 }
 
+function tableMarkdown(value: string): string | undefined {
+  const body = elementBody(value, 'table');
+  if (body === undefined) return undefined;
+  const openingEnd = value.indexOf('>');
+  const openingTag = openingEnd === -1 ? '' : value.slice(0, openingEnd + 1);
+
+  const rows: string[][] = [];
+  const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/giu;
+  let rowMatch: RegExpExecArray | null;
+  while ((rowMatch = rowRegex.exec(body)) !== null) {
+    const rowBody = rowMatch[1] ?? '';
+    if (/<th[\s>]/iu.test(rowBody)) return undefined;
+    const cells: string[] = [];
+    const cellRegex = /<td([^>]*)>([\s\S]*?)<\/td>/giu;
+    let cellMatch: RegExpExecArray | null;
+    while ((cellMatch = cellRegex.exec(rowBody)) !== null) {
+      const attrs = cellMatch[1] ?? '';
+      const cellText = cellMatch[2] ?? '';
+      if (/\b(?:colspan|rowspan)\s*=/iu.test(attrs)) return undefined;
+      cells.push(cellText.trim().replace(/\s*\n\s*/gu, ' '));
+    }
+    rows.push(cells);
+  }
+
+  const columnCount = rows[0]?.length ?? 0;
+  if (columnCount === 0 || rows.some((row) => row.length !== columnCount))
+    return undefined;
+
+  const hasHeaderRow = attributeValue(openingTag, 'header-row') === 'true';
+  return buildMarkdownTableText(rows, hasHeaderRow);
+}
+
 function transformParent(parent: Parent): void {
   const transformed: RootContent[] = [];
   for (const child of parent.children as RootContent[]) {
@@ -122,6 +155,12 @@ function transformParent(parent: Parent): void {
           .use(remarkParse)
           .use(remarkGfm)
           .parse(columns);
+        transformed.push(...fragment.children);
+        continue;
+      }
+      const table = tableMarkdown(child.value);
+      if (table !== undefined) {
+        const fragment = unified().use(remarkParse).use(remarkGfm).parse(table);
         transformed.push(...fragment.children);
         continue;
       }

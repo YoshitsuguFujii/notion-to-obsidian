@@ -4,6 +4,7 @@ import {
   unsupportedBlockPlaceholder,
   type UnsupportedSidecar,
 } from './unsupported.js';
+import { buildMarkdownTableText } from './table-markdown.js';
 
 export interface FallbackWarning {
   type: 'unsupported_block';
@@ -133,6 +134,26 @@ export function renderFallbackBlocks(
           : typeof value.expression === 'string'
             ? `$$\n${value.expression}\n$$`
             : unsupported(type, id, block);
+      case 'table': {
+        const rowNodes = node.children.filter(
+          (rowNode) => rowNode.block.type === 'table_row',
+        );
+        const rows = rowNodes.map((rowNode) => {
+          const cells = blockValue(rowNode.block, 'table_row').cells;
+          return Array.isArray(cells) ? cells.map(renderRichText) : [];
+        });
+        const columnCount = rows[0]?.length ?? 0;
+        const isRectangular =
+          columnCount > 0 && rows.every((row) => row.length === columnCount);
+        return isRectangular
+          ? buildMarkdownTableText(rows, value.has_column_header === true)
+          : unsupported(type, id, {
+              ...block,
+              rows: rowNodes.map((rowNode) => rowNode.block),
+            });
+      }
+      case 'table_row':
+        return '';
       default:
         return unsupported(type, id, block);
     }

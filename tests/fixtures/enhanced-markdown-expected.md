@@ -40,6 +40,10 @@ Second column
 | - | - |
 | 1 | 2 |
 
+| Fruit | Count |
+| ----- | ----- |
+| Apple | 3     |
+
 <table><tr><th>Raw</th></tr><tr><td>HTML table</td></tr></table>
 
 ![Alt](https://example.com/image.png)
