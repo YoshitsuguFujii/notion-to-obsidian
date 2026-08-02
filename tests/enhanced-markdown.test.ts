@@ -230,4 +230,12 @@ describe('transformEnhancedMarkdown', () => {
       '> [!note]\n> See <synced_block url="https://example.com">Body</synced_block>\n',
     );
   });
+
+  it('table セル内のインラインコードに含まれるタグ状の文字列はリネームされたまま漏れない', async () => {
+    const input =
+      '<table header-row="true"><tr><td>Name</td><td>Code</td></tr><tr><td>Example</td><td>`<synced_block/>`</td></tr></table>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '| Name    | Code              |\n| ------- | ----------------- |\n| Example | `<synced_block/>` |\n',
+    );
+  });
 });

@@ -98,11 +98,21 @@ interface HtmlLikeNode {
   children?: HtmlLikeNode[];
 }
 
+const restorableFragmentNodeTypes = new Set(['html', 'code', 'inlineCode']);
+
 // callout/columns/tableの変換結果（生成した文字列そのもの、または再parse
-// したfragment）にリネーム痕跡が紛れ込む場合がある。htmlノードの値だけを
-// 対象に復元する（code/inlineCodeノードのvalueには触れない）。
+// したfragment）にリネーム痕跡が紛れ込む場合がある。table/columnsは
+// CommonMark上は不透明なHTMLブロックのため、元文書の1回目のparse時点では
+// セル内のバッククォート区間がcode/inlineCodeノードとして認識されず、
+// collectUneditableRangesの除外対象にならない。そのためfragment内では
+// html/code/inlineCodeのいずれも復元対象にする（fragmentは元々table/columns
+// のHTMLブロック内にあった文字列だけが由来のため、元文書の正規のcode/
+// inlineCodeノードを壊す心配はない）。
 function restoreUnderscoreTagsDeep(node: HtmlLikeNode): void {
-  if (node.type === 'html' && typeof node.value === 'string') {
+  if (
+    restorableFragmentNodeTypes.has(node.type) &&
+    typeof node.value === 'string'
+  ) {
     node.value = restoreKnownUnderscoreTags(node.value);
   }
   for (const child of node.children ?? []) restoreUnderscoreTagsDeep(child);
