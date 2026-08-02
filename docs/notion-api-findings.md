@@ -37,6 +37,7 @@
 - 実 Vault（103テーブル）を実測した結果、`<table>` 直下は必ず「任意の `<colgroup>...</colgroup>` → `<tr>...</tr>` の直接の繰り返し」であり、`<thead>` / `<tbody>` / `<tfoot>` によるラップは一度も出現しなかった。セルは常に `<td>` で、`header-row="true"` が付いた場合でも先頭行は `<th>` にならない（Notion独自の視覚スタイル属性であり、HTML5のセマンティックなヘッダー区別ではない）。
 - 内訳: header-row属性なし 73件、`header-row="true"` 28件、`header-column="true"`のみ 1件、両属性 1件。colspan/rowspan（結合セル）は0件。
 - `src/transform/enhanced-markdown.ts` の `tableMarkdown`（table→Markdownテーブル変換）は、この実測に基づき table 直下を「空白・任意のcolgroup・trのみ」と仮定した厳密パーサーで実装しており、`<thead>`/`<tbody>`/`<tfoot>` でラップされた入力は意図的に非対応（変換せず生HTML維持）としている。将来Notion側の出力形式が変わった場合は、この実測結果を更新し、パーサーの許容範囲も合わせて見直すこと。
+- Block API の `table` block では、`table_row.cells` は公式仕様上「rich text配列の配列」（各セル自体がrich text配列）であり、`fallback-block-renderer.ts` の `table` ケースはこの前提（`cells`自体が配列であること・各セルも配列であること・長さが`table_width`と一致すること）を検証してから変換する。満たさない場合は変換せず`unsupported()`へ倒しsidecarへ保全する（API応答の欠損・仕様変更・mock不備を安全側に倒すため）。
 
 ## Block API（フォールバック・補助）
 
