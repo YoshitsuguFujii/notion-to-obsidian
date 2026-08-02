@@ -580,5 +580,39 @@ describe('censusRoot', () => {
 
       expect(result.status).toBe('complete');
     });
+
+    it('既定のpretty形式でも発見済みページ数とリクエスト数が文字列として読み取れる', async () => {
+      let clock = 0;
+      const now = () => clock;
+      const lines: string[] = [];
+      const logger = createLogger({
+        format: 'pretty',
+        level: 'info',
+        write: (line) => lines.push(line),
+      });
+      const listBlockChildren = vi.fn((id: string) => {
+        clock += 600;
+        return Promise.resolve({
+          results:
+            id === 'root'
+              ? [childPage('a', 'A', 'root'), childPage('b', 'B', 'root')]
+              : [],
+          has_more: false,
+          next_cursor: null,
+        });
+      });
+
+      await censusRoot(client({ listBlockChildren }), 'root', {
+        logger,
+        now,
+        logIntervalMs: 1000,
+      });
+
+      const progressLine = lines.find((line) =>
+        line.includes('census progress'),
+      );
+      expect(progressLine).toContain('discovered=3');
+      expect(progressLine).toContain('requests=3');
+    });
   });
 });

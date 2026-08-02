@@ -21,6 +21,18 @@ interface LoggerOptions {
   write?: (line: string) => void;
 }
 
+function formatPretty(entry: Record<string, unknown>): string {
+  const { level, message, ...context } = entry;
+  const contextText = Object.entries(context)
+    .map(
+      ([key, value]) =>
+        `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`,
+    )
+    .join(' ');
+  const prefix = `${(level as string).toUpperCase()} ${message as string}`;
+  return contextText ? `${prefix} ${contextText}` : prefix;
+}
+
 function sanitize(value: unknown, token?: string, key = ''): unknown {
   if (/authorization|token/i.test(key)) return '[REDACTED]';
   if (typeof value === 'string') {
@@ -62,9 +74,7 @@ export function createLogger(options: LoggerOptions) {
       options.token,
     ) as Record<string, unknown>;
     write(
-      options.format === 'json'
-        ? JSON.stringify(entry)
-        : `${level.toUpperCase()} ${entry.message as string}`,
+      options.format === 'json' ? JSON.stringify(entry) : formatPretty(entry),
     );
   };
   return {

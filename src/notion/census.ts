@@ -154,7 +154,7 @@ class ProgressTracker {
   ) {
     this.lastLogAt = this.now();
   }
-  record(action: string, resourceId?: string): void {
+  trackRequest(action: string, resourceId?: string): void {
     this.requestCount += 1;
     this.logger?.debug('census request', {
       action,
@@ -180,7 +180,7 @@ async function tracked<T>(
   try {
     return await promise;
   } finally {
-    tracker.record(action, resourceId);
+    tracker.trackRequest(action, resourceId);
   }
 }
 
@@ -198,6 +198,7 @@ function trackClient(
         'retrieveDatabase',
         databaseId,
       ),
+    // retrieveMarkdown / queryDataSource は census が呼ばないため計測対象外
     retrieveMarkdown: (pageId) => client.retrieveMarkdown(pageId),
     listBlockChildren: (blockId, cursor) =>
       tracked(
