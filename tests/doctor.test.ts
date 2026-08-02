@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runDoctor } from '../src/commands/doctor.js';
+import { InfraError } from '../src/errors.js';
 
 describe('doctor', () => {
   it('ローカル基盤の検査結果を返し Token 値を出力しない', async () => {
@@ -74,5 +75,32 @@ describe('doctor', () => {
     } finally {
       await chmod(managedPath, 0o700);
     }
+  });
+
+  it('notion_connectionチェックはNotionクライアントの分類済みエラーメッセージをそのまま伝える（汎用文言へ差し替えない）', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'notion-doctor-'));
+    await mkdir(join(directory, 'vault'));
+    const configPath = join(directory, 'config.yaml');
+    await writeFile(
+      configPath,
+      `notion: { roots: [{ page_id: root-id, local_name: Notes }] }\nobsidian: { vault_path: ./vault, managed_path: Mirror }\nstate: { database_path: ./.state/state.db }`,
+    );
+
+    const result = await runDoctor({
+      configPath,
+      env: { NOTION_TOKEN: 'secret-token' },
+      client: {
+        retrievePage: () =>
+          Promise.reject(
+            new InfraError('permission', 'stub permission failure message'),
+          ),
+      },
+    });
+
+    const check = result.checks.find(
+      (entry) => entry.name === 'notion_connection',
+    );
+    expect(check?.ok).toBe(false);
+    expect(check?.message).toBe('stub permission failure message');
   });
 });

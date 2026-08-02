@@ -31,6 +31,21 @@ describe('Notion request policy', () => {
     expect(operation).toHaveBeenCalledTimes(1);
   });
 
+  it('HTTP 404（object_not_found）はネットワーク障害ではなく権限/共有の問題として分類する', async () => {
+    const operation = vi
+      .fn()
+      .mockRejectedValue({ status: 404, code: 'object_not_found' });
+    const execute = createRetriableExecutor({ sleep: () => Promise.resolve() });
+
+    const failure: unknown = await execute(operation).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(failure).toMatchObject({ category: 'permission' });
+    expect((failure as Error).message).toMatch(/shared/u);
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
+
   it('最大試行回数を超えて再試行しない', async () => {
     const operation = vi.fn().mockRejectedValue({ code: 'ECONNRESET' });
     const execute = createRetriableExecutor({

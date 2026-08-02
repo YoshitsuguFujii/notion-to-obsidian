@@ -250,7 +250,7 @@ Notion API `2026-03-11`のData Sourceを専用の`_index.md`と行ページに�
 
 ### Integrationでルートを読めない
 
-この状態でdoctorを実行すると、`notion_connection`は`Notion network request failed`、`root_read_permission`は`One or more configured roots are not readable`と表示します。前者は回線やプロキシの問題に見えますが、実際のNotion APIエラーは`object_not_found`で、**ルートページがIntegrationに共有されていない**ことを示します。Tokenを作成しただけではページを読めず、ページ側でConnectionを追加する必要があります。
+この状態でdoctorを実行すると、`notion_connection`は`Notion object was not found or is not shared with this integration. Connect the integration to it in Notion, then retry.`、`root_read_permission`は`One or more configured roots are not readable`と表示します。実際のNotion APIエラーは`object_not_found`（HTTP 404）で、**ルートページがIntegrationに共有されていない**ことを示します（Notionは未共有のページ・データベース・ブロックに対し、存在有無を漏らさないため403ではなく404を返します）。Tokenを作成しただけではページを読めず、ページ側でConnectionを追加する必要があります。
 
 NotionのルートページにConnectionが追加されているか、`page_id`が正しいか、Integrationが読み取りcapabilityを持つかを確認し、doctorを再実行します。
 

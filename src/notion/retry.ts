@@ -33,6 +33,17 @@ function classify(error: Failure): InfraError {
     return new InfraError('validation', 'Notion request validation failed', {
       cause,
     });
+  // Notion は、Integration が未共有のページ/データベース/ブロックに対しても
+  // 403ではなく404（code: object_not_found）を返す（存在有無の漏洩を避ける
+  // ための仕様）。汎用のnetwork分類に落とすと「回線の問題」と誤解されるため、
+  // 権限/共有の問題として明示的に分類する。retrievePage/retrieveDatabase/
+  // listBlockChildren等いずれの経路でも起こりうるため、対象種別を断定しない。
+  if (error.status === 404)
+    return new InfraError(
+      'permission',
+      'Notion object was not found or is not shared with this integration. Connect the integration to it in Notion, then retry.',
+      { cause },
+    );
   if (error.status === 429)
     return new InfraError('rate_limited', 'Notion rate limit exceeded', {
       cause,
