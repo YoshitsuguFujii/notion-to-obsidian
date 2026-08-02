@@ -123,4 +123,54 @@ describe('transformEnhancedMarkdown', () => {
       '| Name  | Note         |\n| ----- | ------------ |\n| Alice | \\*not bold\\* |\n',
     );
   });
+
+  it('caption を含む table は変換せず元の HTML を維持する（caption は認識対象外のため）', async () => {
+    const input =
+      '<table header-row="true"><caption>Important</caption><tr><td>Name</td><td>Score</td></tr></table>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('セル間に孤立したテキストがある table は変換せず元の HTML を維持する', async () => {
+    const input =
+      '<table header-row="true"><tr><td>A</td>ORPHAN<td>B</td></tr></table>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('table 終了後に同一 HTML ノード内で別コンテンツが続く場合は変換せず元の HTML を維持する', async () => {
+    const input =
+      '<table header-row="true"><tr><td>A</td><td>B</td></tr></table>TRAILING';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('行間に未知タグがある table は変換せず元の HTML を維持する', async () => {
+    const input =
+      '<table header-row="true"><tr><td>A</td><td>B</td></tr><unknown/><tr><td>C</td><td>D</td></tr></table>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('<trfoo> のような類似タグは tr として認識せず、table を変換せず元の HTML を維持する', async () => {
+    const input = '<table header-row="true"><trfoo><td>A</td></trfoo></table>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('<tdfoo> のような類似タグは td として認識せず、table を変換せず元の HTML を維持する', async () => {
+    const input = '<table header-row="true"><tr><tdfoo>A</tdfoo></tr></table>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('colgroup が空白と col のみで構成される table は変換する', async () => {
+    await expect(
+      transformEnhancedMarkdown(
+        '<table header-row="true"><colgroup><col><col width="617"></colgroup><tr><td>Name</td><td>Score</td></tr><tr><td>Alice</td><td>90</td></tr></table>',
+      ),
+    ).resolves.toBe(
+      '| Name  | Score |\n| ----- | ----- |\n| Alice | 90    |\n',
+    );
+  });
+
+  it('colgroup 内に col 以外の未認識コンテンツがある table は変換せず元の HTML を維持する', async () => {
+    const input =
+      '<table header-row="true"><colgroup>UNEXPECTED<col></colgroup><tr><td>Name</td><td>Score</td></tr></table>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
 });

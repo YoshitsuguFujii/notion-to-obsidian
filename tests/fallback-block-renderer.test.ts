@@ -150,7 +150,12 @@ describe('Block API fallback', () => {
 
   it('has_column_header: true の table ブロックを、先頭行をヘッダーとした Markdown テーブルへ変換する', () => {
     const tableNode = {
-      block: block('table1', 'table', { has_column_header: true }, true),
+      block: block(
+        'table1',
+        'table',
+        { has_column_header: true, table_width: 2 },
+        true,
+      ),
       children: [
         {
           block: block('row1', 'table_row', {
@@ -176,7 +181,12 @@ describe('Block API fallback', () => {
 
   it('has_column_header: false の table ブロックは、空のヘッダー行を合成した Markdown テーブルへ変換する', () => {
     const tableNode = {
-      block: block('table1', 'table', { has_column_header: false }, true),
+      block: block(
+        'table1',
+        'table',
+        { has_column_header: false, table_width: 2 },
+        true,
+      ),
       children: [
         {
           block: block('row1', 'table_row', {
@@ -194,7 +204,12 @@ describe('Block API fallback', () => {
 
   it('セル内の改行（shift+enter）を <br> へ変換し行を壊さない', () => {
     const tableNode = {
-      block: block('table1', 'table', { has_column_header: true }, true),
+      block: block(
+        'table1',
+        'table',
+        { has_column_header: true, table_width: 2 },
+        true,
+      ),
       children: [
         {
           block: block('row1', 'table_row', {
@@ -220,7 +235,12 @@ describe('Block API fallback', () => {
 
   it('列数が行間で不一致な table ブロックは変換せず unsupported として保全する', () => {
     const tableNode = {
-      block: block('table1', 'table', { has_column_header: true }, true),
+      block: block(
+        'table1',
+        'table',
+        { has_column_header: true, table_width: 2 },
+        true,
+      ),
       children: [
         {
           block: block('row1', 'table_row', {
@@ -244,5 +264,111 @@ describe('Block API fallback', () => {
     expect(sidecar).toBeDefined();
     const payload = sidecar?.payload as { rows: Array<{ id: string }> };
     expect(payload.rows.map((row) => row.id)).toEqual(['row1', 'row2']);
+  });
+
+  it('table_width と行内のセル数が食い違う table ブロックは、行同士が一致していても変換せず unsupported として保全する', () => {
+    const tableNode = {
+      block: block(
+        'table1',
+        'table',
+        { has_column_header: true, table_width: 3 },
+        true,
+      ),
+      children: [
+        {
+          block: block('row1', 'table_row', {
+            cells: [richText('Name'), richText('Score')],
+          }),
+          children: [],
+        },
+        {
+          block: block('row2', 'table_row', {
+            cells: [richText('Alice'), richText('90')],
+          }),
+          children: [],
+        },
+      ],
+    };
+
+    const result = renderFallbackBlocks([tableNode]);
+
+    expect(result.markdown).toContain('[Unsupported block: table]');
+    const sidecar = result.sidecars.find(
+      (entry) => entry.type === 'table' && entry.id === 'table1',
+    );
+    expect(sidecar).toBeDefined();
+  });
+
+  it('table_width が欠落した table ブロックは変換せず unsupported として保全する', () => {
+    const tableNode = {
+      block: block('table1', 'table', { has_column_header: true }, true),
+      children: [
+        {
+          block: block('row1', 'table_row', {
+            cells: [richText('Alice'), richText('90')],
+          }),
+          children: [],
+        },
+      ],
+    };
+
+    const result = renderFallbackBlocks([tableNode]);
+
+    expect(result.markdown).toContain('[Unsupported block: table]');
+  });
+
+  it.each([0, -1, 1.5, '2'])(
+    'table_width が不正な値（%s）の table ブロックは変換せず unsupported として保全する',
+    (tableWidth) => {
+      const tableNode = {
+        block: block(
+          'table1',
+          'table',
+          { has_column_header: true, table_width: tableWidth },
+          true,
+        ),
+        children: [
+          {
+            block: block('row1', 'table_row', {
+              cells: [richText('Alice'), richText('90')],
+            }),
+            children: [],
+          },
+        ],
+      };
+
+      const result = renderFallbackBlocks([tableNode]);
+
+      expect(result.markdown).toContain('[Unsupported block: table]');
+    },
+  );
+
+  it('table_row 以外の子が混在する table ブロックは変換せず unsupported として保全する', () => {
+    const tableNode = {
+      block: block(
+        'table1',
+        'table',
+        { has_column_header: true, table_width: 2 },
+        true,
+      ),
+      children: [
+        {
+          block: block('row1', 'table_row', {
+            cells: [richText('Name'), richText('Score')],
+          }),
+          children: [],
+        },
+        {
+          block: block('note1', 'paragraph', {
+            rich_text: richText('unexpected sibling'),
+          }),
+          children: [],
+        },
+      ],
+    };
+
+    const result = renderFallbackBlocks([tableNode]);
+
+    expect(result.markdown).toContain('[Unsupported block: table]');
   });
 });

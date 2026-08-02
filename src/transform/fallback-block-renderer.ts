@@ -135,21 +135,30 @@ export function renderFallbackBlocks(
             ? `$$\n${value.expression}\n$$`
             : unsupported(type, id, block);
       case 'table': {
-        const rowNodes = node.children.filter(
+        // table_width は table block の正本情報（列数）。内部的な行同士の長さ
+        // 一致だけで矩形判定すると、table_width と食い違う API 応答（欠損・
+        // 仕様変更・mock不備）を正常な生成物として確定してしまう。table_width
+        // 自体の妥当性と、children が全て table_row であることも合わせて検証する。
+        const width = value.table_width;
+        const validWidth =
+          typeof width === 'number' && Number.isInteger(width) && width > 0;
+        const allTableRow = node.children.every(
           (rowNode) => rowNode.block.type === 'table_row',
         );
-        const rows = rowNodes.map((rowNode) => {
+        const rows = node.children.map((rowNode) => {
           const cells = blockValue(rowNode.block, 'table_row').cells;
           return Array.isArray(cells) ? cells.map(renderRichText) : [];
         });
-        const columnCount = rows[0]?.length ?? 0;
         const isRectangular =
-          columnCount > 0 && rows.every((row) => row.length === columnCount);
+          validWidth &&
+          allTableRow &&
+          rows.length > 0 &&
+          rows.every((row) => row.length === width);
         return isRectangular
           ? buildMarkdownTableText(rows, value.has_column_header === true)
           : unsupported(type, id, {
               ...block,
-              rows: rowNodes.map((rowNode) => rowNode.block),
+              rows: node.children.map((rowNode) => rowNode.block),
             });
       }
       case 'table_row':

@@ -103,29 +103,123 @@ function columnsMarkdown(value: string): string | undefined {
   return output.join('\n');
 }
 
-function tableMarkdown(value: string): string | undefined {
-  const body = elementBody(value, 'table');
-  if (body === undefined) return undefined;
-  const openingEnd = value.indexOf('>');
-  const openingTag = openingEnd === -1 ? '' : value.slice(0, openingEnd + 1);
+// `<table>` の中身は、tableMarkdown が丸ごと置換する対象になる。<tr>/<td> だけを
+// 正規表現で拾う実装だと、caption・セル間の孤立テキスト・</table> 後方の後続内容・
+// <trfoo> のような類似タグを黙って捨ててしまう（安全不変条件8違反）。そのため、
+// 空白・colgroup（任意）・tr だけで body 全体が過不足なく消費されることを検証し、
+// 1文字でも未認識の残りがあれば undefined を返して元の HTML を維持する。
+function startsWithTagBoundary(
+  source: string,
+  pos: number,
+  tag: string,
+): boolean {
+  const prefix = `<${tag}`;
+  if (source.slice(pos, pos + prefix.length).toLowerCase() !== prefix)
+    return false;
+  const after = source[pos + prefix.length];
+  return after === '>' || (after !== undefined && /\s/u.test(after));
+}
+
+function parseStrictRow(rowBody: string): string[] | undefined {
+  const cells: string[] = [];
+  let pos = 0;
+  while (pos < rowBody.length) {
+    while (pos < rowBody.length && /\s/u.test(rowBody[pos] ?? '')) pos += 1;
+    if (pos >= rowBody.length) break;
+    if (!startsWithTagBoundary(rowBody, pos, 'td')) return undefined;
+    const openingEnd = rowBody.indexOf('>', pos);
+    if (openingEnd === -1) return undefined;
+    const attrs = rowBody.slice(pos + '<td'.length, openingEnd);
+    if (/\b(?:colspan|rowspan)\s*=/iu.test(attrs)) return undefined;
+    const closing = rowBody.toLowerCase().indexOf('</td>', openingEnd + 1);
+    if (closing === -1) return undefined;
+    const cellText = rowBody.slice(openingEnd + 1, closing);
+    cells.push(cellText.trim().replace(/\s*\n\s*/gu, ' '));
+    pos = closing + '</td>'.length;
+  }
+  return cells;
+}
+
+// colgroup の中身は空白と <col ...> （void 要素。閉じタグなし）だけを許可する。
+// この検証を欠くと、colgroup 全体を丸ごと読み飛ばす分岐だけが「1文字でも
+// 未認識の残りがあれば undefined を返す」という不変条件から外れてしまう。
+function isStrictColgroupBody(colgroupBody: string): boolean {
+  let pos = 0;
+  while (pos < colgroupBody.length) {
+    while (pos < colgroupBody.length && /\s/u.test(colgroupBody[pos] ?? ''))
+      pos += 1;
+    if (pos >= colgroupBody.length) break;
+    if (!startsWithTagBoundary(colgroupBody, pos, 'col')) return false;
+    const tagEnd = colgroupBody.indexOf('>', pos);
+    if (tagEnd === -1) return false;
+    pos = tagEnd + 1;
+  }
+  return true;
+}
+
+function parseStrictTable(
+  value: string,
+): { openingTag: string; rows: string[][] } | undefined {
+  const trimmed = value.trim();
+  if (!startsWithTagBoundary(trimmed, 0, 'table')) return undefined;
+  const openingEnd = trimmed.indexOf('>');
+  if (openingEnd === -1) return undefined;
+  const openingTag = trimmed.slice(0, openingEnd + 1);
+  const closingTag = '</table>';
+  const closingStart = trimmed
+    .toLowerCase()
+    .indexOf(closingTag, openingEnd + 1);
+  if (closingStart === -1) return undefined;
+  if (trimmed.slice(closingStart + closingTag.length).trim() !== '')
+    return undefined;
+  const body = trimmed.slice(openingEnd + 1, closingStart);
 
   const rows: string[][] = [];
-  const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/giu;
-  let rowMatch: RegExpExecArray | null;
-  while ((rowMatch = rowRegex.exec(body)) !== null) {
-    const rowBody = rowMatch[1] ?? '';
-    if (/<th[\s>]/iu.test(rowBody)) return undefined;
-    const cells: string[] = [];
-    const cellRegex = /<td([^>]*)>([\s\S]*?)<\/td>/giu;
-    let cellMatch: RegExpExecArray | null;
-    while ((cellMatch = cellRegex.exec(rowBody)) !== null) {
-      const attrs = cellMatch[1] ?? '';
-      const cellText = cellMatch[2] ?? '';
-      if (/\b(?:colspan|rowspan)\s*=/iu.test(attrs)) return undefined;
-      cells.push(cellText.trim().replace(/\s*\n\s*/gu, ' '));
+  let pos = 0;
+  let sawColgroup = false;
+  while (pos < body.length) {
+    while (pos < body.length && /\s/u.test(body[pos] ?? '')) pos += 1;
+    if (pos >= body.length) break;
+    if (
+      !sawColgroup &&
+      rows.length === 0 &&
+      startsWithTagBoundary(body, pos, 'colgroup')
+    ) {
+      const colgroupOpeningEnd = body.indexOf('>', pos);
+      if (colgroupOpeningEnd === -1) return undefined;
+      const colgroupEnd = body
+        .toLowerCase()
+        .indexOf('</colgroup>', colgroupOpeningEnd + 1);
+      if (colgroupEnd === -1) return undefined;
+      if (
+        !isStrictColgroupBody(body.slice(colgroupOpeningEnd + 1, colgroupEnd))
+      )
+        return undefined;
+      pos = colgroupEnd + '</colgroup>'.length;
+      sawColgroup = true;
+      continue;
     }
-    rows.push(cells);
+    if (startsWithTagBoundary(body, pos, 'tr')) {
+      const rowOpeningEnd = body.indexOf('>', pos);
+      if (rowOpeningEnd === -1) return undefined;
+      const rowClosing = body.toLowerCase().indexOf('</tr>', rowOpeningEnd + 1);
+      if (rowClosing === -1) return undefined;
+      const cells = parseStrictRow(body.slice(rowOpeningEnd + 1, rowClosing));
+      if (cells === undefined) return undefined;
+      rows.push(cells);
+      pos = rowClosing + '</tr>'.length;
+      continue;
+    }
+    return undefined;
   }
+
+  return { openingTag, rows };
+}
+
+function tableMarkdown(value: string): string | undefined {
+  const parsed = parseStrictTable(value);
+  if (parsed === undefined) return undefined;
+  const { openingTag, rows } = parsed;
 
   const columnCount = rows[0]?.length ?? 0;
   if (columnCount === 0 || rows.some((row) => row.length !== columnCount))
