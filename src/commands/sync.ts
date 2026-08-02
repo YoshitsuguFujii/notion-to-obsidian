@@ -50,7 +50,7 @@ export async function runSyncCommand(options: SyncCommandOptions) {
   const result = await runSyncOrchestrator(config, options, {
     store,
     lock,
-    census: (rootId) => censusRoot(client, rootId),
+    census: (rootId) => censusRoot(client, rootId, { logger }),
     retrieveContent: (pageId) => retrieveMarkdownWithFallback(client, pageId),
     fetchDataSourceRows: (dataSourceId) =>
       fetchDataSourceRows(client, dataSourceId),

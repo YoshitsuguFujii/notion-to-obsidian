@@ -1,5 +1,14 @@
 import type { NotionClient } from './types.js';
 import { fetchAllPages } from './pagination.js';
+import type { createLogger } from '../logging/index.js';
+
+type Logger = ReturnType<typeof createLogger>;
+
+export interface CensusOptions {
+  logger?: Logger;
+  now?: () => number;
+  logIntervalMs?: number;
+}
 
 export type CensusObjectType = 'page' | 'database';
 export type ParentType = 'page' | 'database' | 'workspace' | 'unknown';
@@ -134,6 +143,75 @@ function dataSourceIds(value: unknown): string[] {
   });
 }
 
+class ProgressTracker {
+  private requestCount = 0;
+  private lastLogAt: number;
+  constructor(
+    private readonly logger: Logger | undefined,
+    private readonly now: () => number,
+    private readonly intervalMs: number,
+    private readonly discoveredCount: () => number,
+  ) {
+    this.lastLogAt = this.now();
+  }
+  record(action: string, resourceId?: string): void {
+    this.requestCount += 1;
+    this.logger?.debug('census request', {
+      action,
+      ...(resourceId ? { resource_id: resourceId } : {}),
+    });
+    const elapsed = this.now() - this.lastLogAt;
+    if (elapsed >= this.intervalMs) {
+      this.lastLogAt = this.now();
+      this.logger?.info('census progress', {
+        discovered: this.discoveredCount(),
+        requests: this.requestCount,
+      });
+    }
+  }
+}
+
+async function tracked<T>(
+  promise: Promise<T>,
+  tracker: ProgressTracker,
+  action: string,
+  resourceId?: string,
+): Promise<T> {
+  try {
+    return await promise;
+  } finally {
+    tracker.record(action, resourceId);
+  }
+}
+
+function trackClient(
+  client: NotionClient,
+  tracker: ProgressTracker,
+): NotionClient {
+  return {
+    retrievePage: (pageId) =>
+      tracked(client.retrievePage(pageId), tracker, 'retrievePage', pageId),
+    retrieveDatabase: (databaseId) =>
+      tracked(
+        client.retrieveDatabase(databaseId),
+        tracker,
+        'retrieveDatabase',
+        databaseId,
+      ),
+    retrieveMarkdown: (pageId) => client.retrieveMarkdown(pageId),
+    listBlockChildren: (blockId, cursor) =>
+      tracked(
+        client.listBlockChildren(blockId, cursor),
+        tracker,
+        'listBlockChildren',
+        blockId,
+      ),
+    queryDataSource: (dataSourceId, cursor) =>
+      client.queryDataSource(dataSourceId, cursor),
+    search: (cursor) => tracked(client.search(cursor), tracker, 'search'),
+  };
+}
+
 async function reachesRoot(
   client: NotionClient,
   candidateId: string,
@@ -206,11 +284,21 @@ async function searchForMissedResources(
 export async function censusRoot(
   client: NotionClient,
   rootId: string,
+  options: CensusOptions = {},
 ): Promise<RootCensus> {
+  const resources: CensusResource[] = [];
+  const tracker = new ProgressTracker(
+    options.logger,
+    options.now ?? Date.now,
+    options.logIntervalMs ?? 5000,
+    () => resources.length,
+  );
+  const trackedClient = trackClient(client, tracker);
+
   const warnings: CensusWarning[] = [];
   let root: CensusResource | undefined;
   try {
-    root = rootResource(await client.retrievePage(rootId), rootId);
+    root = rootResource(await trackedClient.retrievePage(rootId), rootId);
   } catch {
     // A failed root retrieval cannot establish any safe deletion boundary.
   }
@@ -229,7 +317,7 @@ export async function censusRoot(
     };
   }
 
-  const resources = [root];
+  resources.push(root);
   const discovered = new Set([rootId]);
   const queue = [rootId];
   let queueIndex = 0;
@@ -244,7 +332,7 @@ export async function censusRoot(
     if (resource.objectType === 'database') {
       try {
         const ids = dataSourceIds(
-          await client.retrieveDatabase(resource.notionId),
+          await trackedClient.retrieveDatabase(resource.notionId),
         );
         const dataSourceId = ids[0];
         if (dataSourceId) resource = { ...resource, dataSourceId };
@@ -280,7 +368,7 @@ export async function censusRoot(
       visited.add(blockId);
       try {
         const children = await fetchAllPages<unknown>((cursor) =>
-          client.listBlockChildren(blockId, cursor),
+          trackedClient.listBlockChildren(blockId, cursor),
         );
         await visitBlocks(children);
       } catch {
@@ -300,7 +388,7 @@ export async function censusRoot(
     if (!parentId) continue;
     try {
       const children = await fetchAllPages<unknown>((cursor) =>
-        client.listBlockChildren(parentId, cursor),
+        trackedClient.listBlockChildren(parentId, cursor),
       );
       await visitBlocks(children);
     } catch {
@@ -314,7 +402,7 @@ export async function censusRoot(
   }
 
   const searchResult = await searchForMissedResources(
-    client,
+    trackedClient,
     rootId,
     discovered,
   );

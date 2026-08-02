@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { NotionClient } from '../src/notion/types.js';
 import { censusRoot } from '../src/notion/census.js';
 import { planResourcePaths } from '../src/domain/path-plan.js';
+import { createLogger } from '../src/logging/index.js';
 
 const rootPage = {
   object: 'page',
@@ -471,5 +472,113 @@ describe('censusRoot', () => {
     expect(result.status).toBe('complete');
     expect(result.deletionAllowed).toBe(true);
     expect(result.warnings).toEqual([]);
+  });
+
+  describe('進捗ログ', () => {
+    interface LogEntry {
+      level: string;
+      message: string;
+      [key: string]: unknown;
+    }
+
+    function loggerCapturingLines(level: 'info' | 'debug') {
+      const lines: string[] = [];
+      const logger = createLogger({
+        format: 'json',
+        level,
+        write: (line) => lines.push(line),
+      });
+      const entriesWithMessage = (message: string): LogEntry[] =>
+        lines
+          .map((line): LogEntry => JSON.parse(line) as LogEntry)
+          .filter((entry) => entry.message === message);
+      return { logger, entriesWithMessage };
+    }
+
+    it('十分な時間が経過したリクエスト完了時に発見済みページ数とリクエスト数をinfoログへ出す', async () => {
+      let clock = 0;
+      const now = () => clock;
+      const { logger, entriesWithMessage } = loggerCapturingLines('info');
+      const listBlockChildren = vi.fn((id: string) => {
+        clock += 600;
+        return Promise.resolve({
+          results:
+            id === 'root'
+              ? [childPage('a', 'A', 'root'), childPage('b', 'B', 'root')]
+              : [],
+          has_more: false,
+          next_cursor: null,
+        });
+      });
+
+      await censusRoot(client({ listBlockChildren }), 'root', {
+        logger,
+        now,
+        logIntervalMs: 1000,
+      });
+
+      const progressLines = entriesWithMessage('census progress');
+      expect(progressLines).toHaveLength(1);
+      expect(progressLines[0]).toMatchObject({
+        level: 'info',
+        discovered: 3,
+        requests: 3,
+      });
+    });
+
+    it('間隔が経過していないリクエスト完了ではinfoログを出さない', async () => {
+      const now = () => 0;
+      const { logger, entriesWithMessage } = loggerCapturingLines('info');
+      const listBlockChildren = vi.fn((id: string) =>
+        Promise.resolve({
+          results: id === 'root' ? [childPage('a', 'A', 'root')] : [],
+          has_more: false,
+          next_cursor: null,
+        }),
+      );
+
+      await censusRoot(client({ listBlockChildren }), 'root', {
+        logger,
+        now,
+        logIntervalMs: 1000,
+      });
+
+      expect(entriesWithMessage('census progress')).toHaveLength(0);
+    });
+
+    it('debugレベル（--verbose相当）ではリクエストごとに詳細ログを出す', async () => {
+      const { logger, entriesWithMessage } = loggerCapturingLines('debug');
+      const listBlockChildren = vi.fn((id: string) =>
+        Promise.resolve({
+          results: id === 'root' ? [childPage('a', 'A', 'root')] : [],
+          has_more: false,
+          next_cursor: null,
+        }),
+      );
+
+      await censusRoot(client({ listBlockChildren }), 'root', { logger });
+
+      const requestLines = entriesWithMessage('census request');
+      expect(requestLines.length).toBeGreaterThan(0);
+      expect(requestLines[0]).toMatchObject({
+        level: 'debug',
+        action: 'retrievePage',
+        resource_id: 'root',
+      });
+    });
+
+    it('info レベルではリクエストごとの詳細ログを出さない', async () => {
+      const { logger, entriesWithMessage } = loggerCapturingLines('info');
+
+      await censusRoot(client(), 'root', { logger });
+
+      expect(entriesWithMessage('census request')).toHaveLength(0);
+    });
+
+    it('loggerを渡さなくても従来どおり動作する', async () => {
+      const result = await censusRoot(client(), 'root');
+
+      expect(result.status).toBe('complete');
+    });
   });
 });
