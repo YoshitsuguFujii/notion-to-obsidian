@@ -6,6 +6,76 @@ import remarkGfm from 'remark-gfm';
 import remarkStringify from 'remark-stringify';
 import { buildMarkdownTableText } from './table-markdown.js';
 
+interface Range {
+  start: number;
+  end: number;
+}
+
+interface PositionedNode {
+  type: string;
+  position?: { start: { offset?: number }; end: { offset?: number } };
+  children?: PositionedNode[];
+}
+
+const parseOnlyProcessor = unified().use(remarkParse).use(remarkGfm);
+
+// code / inlineCode ノードの位置範囲。この範囲内の文字列はpre-parseの
+// タグ名リネーム（欠陥1/2）で一切書き換えない（AGENTS.mdの安全不変条件：
+// code/inline code内を正規表現で壊さない）。stringifyは行わず位置情報だけを
+// 取る（signed-asset-urls.tsのdestinationTokenSpans方式を踏襲）。
+function collectUneditableRanges(markdown: string): Range[] {
+  const ranges: Range[] = [];
+  const collect = (node: PositionedNode): void => {
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (
+      (node.type === 'code' || node.type === 'inlineCode') &&
+      start !== undefined &&
+      end !== undefined
+    )
+      ranges.push({ start, end });
+    for (const child of node.children ?? []) collect(child);
+  };
+  try {
+    collect(parseOnlyProcessor.parse(markdown) as PositionedNode);
+  } catch {
+    return [];
+  }
+  return ranges;
+}
+
+function isWithinRange(index: number, ranges: readonly Range[]): boolean {
+  return ranges.some((range) => index >= range.start && index < range.end);
+}
+
+// remarkのHTMLタグ名判定はアンダースコアを許可しないため、Notionが直接
+// 出力するアンダースコア入りタグ名（synced_block, table_of_contents）は
+// HTMLノードとして認識されず、地の文としてエスケープされ破損する。
+// 既知タグ名のみをホワイトリストでリネームし、remarkがHTMLとして正しく
+// 認識できる形にする。code/inlineCode内の同名文字列は書き換えない。
+const knownUnderscoreTagNames = ['synced_block', 'table_of_contents'] as const;
+
+function renameKnownUnderscoreTags(markdown: string): string {
+  if (!knownUnderscoreTagNames.some((name) => markdown.includes(name)))
+    return markdown;
+  const uneditableRanges = collectUneditableRanges(markdown);
+  const pattern = new RegExp(
+    `</?(${knownUnderscoreTagNames.join('|')})\\b`,
+    'g',
+  );
+  let result = '';
+  let cursor = 0;
+  for (const match of markdown.matchAll(pattern)) {
+    const index = match.index;
+    if (isWithinRange(index, uneditableRanges)) continue;
+    const tagName = match[1]!;
+    const renamed = match[0].replace(tagName, tagName.replaceAll('_', '-'));
+    result += markdown.slice(cursor, index) + renamed;
+    cursor = index + match[0].length;
+  }
+  return result + markdown.slice(cursor);
+}
+
 function attributeValue(openingTag: string, name: string): string | undefined {
   let offset = 0;
   while (offset < openingTag.length) {
@@ -229,6 +299,19 @@ function tableMarkdown(value: string): string | undefined {
   return buildMarkdownTableText(rows, hasHeaderRow);
 }
 
+// table_of_contents（リネーム後 table-of-contents）はNotion自動生成の目次
+// ウィジェットで著者の本文を含まないため、変換ではなく削除する（ADR-006の
+// 「未知は保持」方針の例外）。
+function isTableOfContentsMarkdown(value: string): boolean {
+  const trimmed = value.trim();
+  const prefix = '<table-of-contents';
+  if (!trimmed.toLowerCase().startsWith(prefix)) return false;
+  const after = trimmed[prefix.length];
+  return (
+    after === '>' || after === '/' || (after !== undefined && /\s/u.test(after))
+  );
+}
+
 function transformParent(parent: Parent): void {
   const transformed: RootContent[] = [];
   for (const child of parent.children as RootContent[]) {
@@ -238,6 +321,7 @@ function transformParent(parent: Parent): void {
       continue;
     }
     if (child.type === 'html') {
+      if (isTableOfContentsMarkdown(child.value)) continue;
       const callout = calloutMarkdown(child.value);
       if (callout !== undefined) {
         transformed.push({ type: 'html', value: callout });
@@ -285,5 +369,6 @@ const processor = unified()
 export async function transformEnhancedMarkdown(
   markdown: string,
 ): Promise<string> {
-  return String(await processor.process(markdown));
+  const normalized = renameKnownUnderscoreTags(markdown);
+  return String(await processor.process(normalized));
 }

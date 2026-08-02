@@ -173,4 +173,29 @@ describe('transformEnhancedMarkdown', () => {
       '<table header-row="true"><colgroup>UNEXPECTED<col></colgroup><tr><td>Name</td><td>Score</td></tr></table>';
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
   });
+
+  it('table_of_contents（属性なし）を削除する', async () => {
+    await expect(
+      transformEnhancedMarkdown('<table_of_contents/>'),
+    ).resolves.toBe('');
+  });
+
+  it('table_of_contents（属性あり）を削除する', async () => {
+    await expect(
+      transformEnhancedMarkdown('<table_of_contents color="gray"/>'),
+    ).resolves.toBe('');
+  });
+
+  it('文書中に複数回出現する table_of_contents を全て削除し、前後の本文を保持する', async () => {
+    const input =
+      'Before\n\n<table_of_contents/>\n\nMiddle\n\n<table_of_contents color="gray"/>\n\nAfter';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'Before\n\nMiddle\n\nAfter\n',
+    );
+  });
+
+  it('インラインコード・コードフェンス内の table_of_contents という文字列は削除しない', async () => {
+    const input = '`<table_of_contents/>`\n\n```\n<table_of_contents/>\n```\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(input);
+  });
 });
