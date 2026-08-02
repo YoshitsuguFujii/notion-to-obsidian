@@ -36,11 +36,7 @@ function collectUneditableRanges(markdown: string): Range[] {
       ranges.push({ start, end });
     for (const child of node.children ?? []) collect(child);
   };
-  try {
-    collect(parseOnlyProcessor.parse(markdown) as PositionedNode);
-  } catch {
-    return [];
-  }
+  collect(parseOnlyProcessor.parse(markdown) as PositionedNode);
   return ranges;
 }
 
@@ -58,7 +54,14 @@ const knownUnderscoreTagNames = ['synced_block', 'table_of_contents'] as const;
 function renameKnownUnderscoreTags(markdown: string): string {
   if (!knownUnderscoreTagNames.some((name) => markdown.includes(name)))
     return markdown;
-  const uneditableRanges = collectUneditableRanges(markdown);
+  let uneditableRanges: Range[];
+  try {
+    uneditableRanges = collectUneditableRanges(markdown);
+  } catch {
+    // 除外範囲を確定できない場合、code内を誤って書き換えるより
+    // 安全側に倒してリネーム自体を行わない。
+    return markdown;
+  }
   const pattern = new RegExp(
     `</?(${knownUnderscoreTagNames.join('|')})\\b`,
     'g',
@@ -78,15 +81,31 @@ function renameKnownUnderscoreTags(markdown: string): string {
 
 // リネーム後のタグ名が、削除・変換のいずれにも該当せずhtmlノードとして
 // そのまま出力に残る場合（例: 直後に空行なしで本文が続くtable_of_contents、
-// Phase 2実装前のsynced_block）に、内部処理用のリネーム痕跡を元の綴りへ
-// 戻す。html型ノードはremark-stringifyがそのまま出力するため、ここで
-// 戻しても再度エスケープされて壊れることはない（実測で確認済み）。
+// 変換が未実装のタグ）に、内部処理用のリネーム痕跡を元の綴りへ戻す。
+// html型ノードはremark-stringifyがそのまま出力するため、ここで戻しても
+// 再度エスケープされて壊れることはない（実測で確認済み）。
 function restoreKnownUnderscoreTags(value: string): string {
   const pattern = new RegExp(
     `</?(${knownUnderscoreTagNames.map((name) => name.replaceAll('_', '-')).join('|')})\\b`,
     'g',
   );
   return value.replace(pattern, (match) => match.replaceAll('-', '_'));
+}
+
+interface HtmlLikeNode {
+  type: string;
+  value?: string;
+  children?: HtmlLikeNode[];
+}
+
+// callout/columns/tableの変換結果（生成した文字列そのもの、または再parse
+// したfragment）にリネーム痕跡が紛れ込む場合がある。htmlノードの値だけを
+// 対象に復元する（code/inlineCodeノードのvalueには触れない）。
+function restoreUnderscoreTagsDeep(node: HtmlLikeNode): void {
+  if (node.type === 'html' && typeof node.value === 'string') {
+    node.value = restoreKnownUnderscoreTags(node.value);
+  }
+  for (const child of node.children ?? []) restoreUnderscoreTagsDeep(child);
 }
 
 function attributeValue(openingTag: string, name: string): string | undefined {
@@ -339,14 +358,20 @@ function transformParent(parent: Parent): void {
   for (const child of parent.children as RootContent[]) {
     const inline = inlineCallout(child);
     if (inline !== undefined) {
-      transformed.push({ type: 'html', value: inline });
+      transformed.push({
+        type: 'html',
+        value: restoreKnownUnderscoreTags(inline),
+      });
       continue;
     }
     if (child.type === 'html') {
       if (isTableOfContentsMarkdown(child.value)) continue;
       const callout = calloutMarkdown(child.value);
       if (callout !== undefined) {
-        transformed.push({ type: 'html', value: callout });
+        transformed.push({
+          type: 'html',
+          value: restoreKnownUnderscoreTags(callout),
+        });
         continue;
       }
       const columns = columnsMarkdown(child.value);
@@ -355,12 +380,14 @@ function transformParent(parent: Parent): void {
           .use(remarkParse)
           .use(remarkGfm)
           .parse(columns);
+        for (const node of fragment.children) restoreUnderscoreTagsDeep(node);
         transformed.push(...fragment.children);
         continue;
       }
       const table = tableMarkdown(child.value);
       if (table !== undefined) {
         const fragment = unified().use(remarkParse).use(remarkGfm).parse(table);
+        for (const node of fragment.children) restoreUnderscoreTagsDeep(node);
         transformed.push(...fragment.children);
         continue;
       }

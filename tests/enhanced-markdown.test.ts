@@ -199,13 +199,35 @@ describe('transformEnhancedMarkdown', () => {
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(input);
   });
 
+  it('段落途中に現れる table_of_contents を削除し、前後の本文を保持する', async () => {
+    await expect(
+      transformEnhancedMarkdown('Before <table_of_contents/> after'),
+    ).resolves.toBe('Before  after\n');
+  });
+
   it('table_of_contents の直後（空行なし）に本文が続く場合は削除せず元の HTML を維持する', async () => {
     const input = '<table_of_contents/>\nImportant text on the next line';
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
   });
 
-  it('synced_block はタグ名リネームの対象だが、変換未実装のため元の綴りのまま維持する（文字化けしない）', async () => {
+  it('削除・変換の対象外のアンダースコア入りタグ（synced_block）は元の綴りを保つ（文字化けしない）', async () => {
     const input = '<synced_block url="https://example.com">Body</synced_block>';
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('columns内にネストしたsynced_blockも元の綴りを保つ', async () => {
+    const input =
+      '<columns>\n<column>\n<synced_block url="https://example.com">Body</synced_block>\n</column>\n</columns>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '<synced_block url="https://example.com">Body</synced_block>\n',
+    );
+  });
+
+  it('callout内にネストしたsynced_blockも元の綴りを保つ', async () => {
+    const input =
+      '<callout>See <synced_block url="https://example.com">Body</synced_block></callout>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '> [!note]\n> See <synced_block url="https://example.com">Body</synced_block>\n',
+    );
   });
 });
