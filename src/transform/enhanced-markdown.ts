@@ -20,9 +20,9 @@ interface PositionedNode {
 const parseOnlyProcessor = unified().use(remarkParse).use(remarkGfm);
 
 // code / inlineCode ノードの位置範囲。この範囲内の文字列はpre-parseの
-// タグ名リネーム（欠陥1/2）で一切書き換えない（AGENTS.mdの安全不変条件：
-// code/inline code内を正規表現で壊さない）。stringifyは行わず位置情報だけを
-// 取る（signed-asset-urls.tsのdestinationTokenSpans方式を踏襲）。
+// アンダースコア入りタグ名リネームで一切書き換えない（AGENTS.mdの安全
+// 不変条件：code/inline code内を正規表現で壊さない）。stringifyは行わず
+// 位置情報だけを取る（signed-asset-urls.tsのdestinationTokenSpans方式を踏襲）。
 function collectUneditableRanges(markdown: string): Range[] {
   const ranges: Range[] = [];
   const collect = (node: PositionedNode): void => {
@@ -74,6 +74,19 @@ function renameKnownUnderscoreTags(markdown: string): string {
     cursor = index + match[0].length;
   }
   return result + markdown.slice(cursor);
+}
+
+// リネーム後のタグ名が、削除・変換のいずれにも該当せずhtmlノードとして
+// そのまま出力に残る場合（例: 直後に空行なしで本文が続くtable_of_contents、
+// Phase 2実装前のsynced_block）に、内部処理用のリネーム痕跡を元の綴りへ
+// 戻す。html型ノードはremark-stringifyがそのまま出力するため、ここで
+// 戻しても再度エスケープされて壊れることはない（実測で確認済み）。
+function restoreKnownUnderscoreTags(value: string): string {
+  const pattern = new RegExp(
+    `</?(${knownUnderscoreTagNames.map((name) => name.replaceAll('_', '-')).join('|')})\\b`,
+    'g',
+  );
+  return value.replace(pattern, (match) => match.replaceAll('-', '_'));
 }
 
 function attributeValue(openingTag: string, name: string): string | undefined {
@@ -301,15 +314,24 @@ function tableMarkdown(value: string): string | undefined {
 
 // table_of_contents（リネーム後 table-of-contents）はNotion自動生成の目次
 // ウィジェットで著者の本文を含まないため、変換ではなく削除する（ADR-006の
-// 「未知は保持」方針の例外）。
+// 「未知は保持」方針の例外）。CommonMarkのHTMLブロックは空行まで後続行を
+// 吸収するため、自己終了タグの直後（trim後）に本文が続く場合は同じhtml
+// ノードにその本文が混入している。安全側に倒し、タグ単体で完結する場合
+// （自己終了 `/>` の直後が空白のみ）に限って削除する。
 function isTableOfContentsMarkdown(value: string): boolean {
   const trimmed = value.trim();
   const prefix = '<table-of-contents';
   if (!trimmed.toLowerCase().startsWith(prefix)) return false;
   const after = trimmed[prefix.length];
-  return (
-    after === '>' || after === '/' || (after !== undefined && /\s/u.test(after))
-  );
+  if (
+    after !== '>' &&
+    after !== '/' &&
+    !(after !== undefined && /\s/u.test(after))
+  )
+    return false;
+  const closingIndex = trimmed.indexOf('>');
+  if (closingIndex === -1 || trimmed[closingIndex - 1] !== '/') return false;
+  return trimmed.slice(closingIndex + 1).trim() === '';
 }
 
 function transformParent(parent: Parent): void {
@@ -342,6 +364,11 @@ function transformParent(parent: Parent): void {
         transformed.push(...fragment.children);
         continue;
       }
+      transformed.push({
+        ...child,
+        value: restoreKnownUnderscoreTags(child.value),
+      });
+      continue;
     }
     if ('children' in child && Array.isArray(child.children)) {
       transformParent(child);

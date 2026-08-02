@@ -198,4 +198,14 @@ describe('transformEnhancedMarkdown', () => {
     const input = '`<table_of_contents/>`\n\n```\n<table_of_contents/>\n```\n';
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(input);
   });
+
+  it('table_of_contents の直後（空行なし）に本文が続く場合は削除せず元の HTML を維持する', async () => {
+    const input = '<table_of_contents/>\nImportant text on the next line';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('synced_block はタグ名リネームの対象だが、変換未実装のため元の綴りのまま維持する（文字化けしない）', async () => {
+    const input = '<synced_block url="https://example.com">Body</synced_block>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
 });
