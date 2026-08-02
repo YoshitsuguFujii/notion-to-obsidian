@@ -231,7 +231,7 @@ describe('transformEnhancedMarkdown', () => {
     );
   });
 
-  it('table セル内のインラインコードに含まれるタグ状の文字列はリネームされたまま漏れない', async () => {
+  it('table セル内のインラインコードに書かれたタグ状の文字列は元の綴りのまま出力される', async () => {
     const input =
       '<table header-row="true"><tr><td>Name</td><td>Code</td></tr><tr><td>Example</td><td>`<synced_block/>`</td></tr></table>';
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(
