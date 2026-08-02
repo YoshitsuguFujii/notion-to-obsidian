@@ -32,6 +32,12 @@
 - いずれの場合も情報を黙って破棄せず、placeholder + サイドカー JSON + 警告を残す。
 - `<unknown>` は属性付きタグとして返る場合も想定して処理する。`NOTION_TEST_TOKEN`を設定できる環境では、read-only integration testで属性の有無を含む実API形式を継続確認する。
 
+### table ブロックの Markdown 出力形式（実データ実測・2026-08-01）
+
+- 実 Vault（103テーブル）を実測した結果、`<table>` 直下は必ず「任意の `<colgroup>...</colgroup>` → `<tr>...</tr>` の直接の繰り返し」であり、`<thead>` / `<tbody>` / `<tfoot>` によるラップは一度も出現しなかった。セルは常に `<td>` で、`header-row="true"` が付いた場合でも先頭行は `<th>` にならない（Notion独自の視覚スタイル属性であり、HTML5のセマンティックなヘッダー区別ではない）。
+- 内訳: header-row属性なし 73件、`header-row="true"` 28件、`header-column="true"`のみ 1件、両属性 1件。colspan/rowspan（結合セル）は0件。
+- `src/transform/enhanced-markdown.ts` の `tableMarkdown`（table→Markdownテーブル変換）は、この実測に基づき table 直下を「空白・任意のcolgroup・trのみ」と仮定した厳密パーサーで実装しており、`<thead>`/`<tbody>`/`<tfoot>` でラップされた入力は意図的に非対応（変換せず生HTML維持）としている。将来Notion側の出力形式が変わった場合は、この実測結果を更新し、パーサーの許容範囲も合わせて見直すこと。
+
 ## Block API（フォールバック・補助）
 
 - Markdown API だけで済ませられると仮定しない。以下で Block API を補助的に使う:
