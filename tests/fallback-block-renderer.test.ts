@@ -371,4 +371,35 @@ describe('Block API fallback', () => {
 
     expect(result.markdown).toContain('[Unsupported block: table]');
   });
+
+  it('cellsの一部が配列ではない異常な table ブロックは変換せず unsupported として保全する', () => {
+    const tableNode = {
+      block: block(
+        'table1',
+        'table',
+        { has_column_header: true, table_width: 2 },
+        true,
+      ),
+      children: [
+        {
+          block: block('row1', 'table_row', {
+            cells: [richText('A'), { unexpected: 'important content' }],
+          }),
+          children: [],
+        },
+      ],
+    };
+
+    const result = renderFallbackBlocks([tableNode]);
+
+    expect(result.markdown).toContain('[Unsupported block: table]');
+    const warning = result.warnings.find((entry) => entry.blockId === 'table1');
+    expect(warning).toBeDefined();
+    const sidecar = result.sidecars.find(
+      (entry) => entry.type === 'table' && entry.id === 'table1',
+    );
+    expect(sidecar).toBeDefined();
+    const payload = sidecar?.payload as { rows: Array<{ id: string }> };
+    expect(payload.rows.map((row) => row.id)).toEqual(['row1']);
+  });
 });

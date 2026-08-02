@@ -145,15 +145,25 @@ export function renderFallbackBlocks(
         const allTableRow = node.children.every(
           (rowNode) => rowNode.block.type === 'table_row',
         );
-        const rows = node.children.map((rowNode) => {
-          const cells = blockValue(rowNode.block, 'table_row').cells;
-          return Array.isArray(cells) ? cells.map(renderRichText) : [];
-        });
+        const rawRows = node.children.map(
+          (rowNode) => blockValue(rowNode.block, 'table_row').cells,
+        );
+        // cells 自体が配列であることに加え、各要素（各cell）自体もrich text配列
+        // であることを検証する。ここを省くと、renderRichText が非配列を ''
+        // へ静かに丸めるため、異常なcell（例: 配列でないオブジェクト）が
+        // 空文字列のセルとして紛れ込み、table_width と長さが一致するだけの
+        // 「正常に変換できたtable」として通ってしまう（安全不変条件8違反）。
+        const validCells = rawRows.every(
+          (cells) =>
+            Array.isArray(cells) &&
+            cells.length === width &&
+            cells.every((cell) => Array.isArray(cell)),
+        );
         const isRectangular =
-          validWidth &&
-          allTableRow &&
-          rows.length > 0 &&
-          rows.every((row) => row.length === width);
+          validWidth && allTableRow && rawRows.length > 0 && validCells;
+        const rows = isRectangular
+          ? (rawRows as unknown[][]).map((cells) => cells.map(renderRichText))
+          : [];
         return isRectangular
           ? buildMarkdownTableText(rows, value.has_column_header === true)
           : unsupported(type, id, {
