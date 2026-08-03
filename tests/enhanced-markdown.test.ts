@@ -411,6 +411,12 @@ describe('transformEnhancedMarkdown', () => {
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(input);
   });
 
+  it('意図的な空コードブロックの後に他の本文・別のコードブロックが続いても誤って吸収しない', async () => {
+    const input =
+      '1. text\n\n   ```js\n   ```\n\nSome paragraph.\n\n```\nplain code\n```\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(input);
+  });
+
   it('リスト外（トップレベル）の通常のコードフェンスは変更されない', async () => {
     const input = '```js\nconsole.log(1);\n```\n';
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(input);

@@ -18,21 +18,42 @@ function isBareCode(node: RootContent): node is Code {
   );
 }
 
-// 崩壊した番号付きリスト内コードフェンスの開始ノード（空code+lang付き）を、
-// 最後のlistItemの最後の子として持つ場合のみ返す。CommonMarkの仕様上、
-// インデント不足で崩壊した行はリスト全体を終了させるため、崩壊が起こり
-// うるのは最後のlistItemの末尾に限られる。
-function findTrailingBrokenCodeStart(list: List): Code | undefined {
+function offsetOf(node: Code, edge: 'start' | 'end'): number | undefined {
+  return node.position?.[edge].offset;
+}
+
+// 崩壊した開始フェンス（閉じフェンスを持たない、単独行のみの不正な
+// フェンス）は、CommonMark上そのフェンス行1行だけがcodeノードの
+// position範囲になる（間に改行を含まない）。一方、開始・閉じフェンスが
+// 揃った意図的な空コードブロックは、開始行から閉じ行までの複数行が
+// position範囲になる。この違いで両者を区別し、後者（意図的な空コード
+// ブロック）を崩壊シグネチャの開始ノードとして誤検出しない。
+function isUnclosedFenceLine(node: Code, sourceText: string): boolean {
+  const start = offsetOf(node, 'start');
+  const end = offsetOf(node, 'end');
+  if (start === undefined || end === undefined) return false;
+  return !sourceText.slice(start, end).includes('\n');
+}
+
+// 崩壊した番号付きリスト内コードフェンスの開始ノード（空code+lang付き、
+// かつ閉じフェンスを持たない単独行）を、最後のlistItemの最後の子として
+// 持つ場合のみ返す。CommonMarkの仕様上、インデント不足で崩壊した行は
+// リスト全体を終了させるため、崩壊が起こりうるのは最後のlistItemの
+// 末尾に限られる。
+function findTrailingBrokenCodeStart(
+  list: List,
+  sourceText: string,
+): Code | undefined {
   if (!list.ordered) return undefined;
   const lastItem = list.children.at(-1);
   const lastChild = lastItem?.children.at(-1);
-  if (lastChild === undefined || !isEmptyCodeWithLang(lastChild))
+  if (
+    lastChild === undefined ||
+    !isEmptyCodeWithLang(lastChild) ||
+    !isUnclosedFenceLine(lastChild, sourceText)
+  )
     return undefined;
   return lastChild;
-}
-
-function offsetOf(node: Code, edge: 'start' | 'end'): number | undefined {
-  return node.position?.[edge].offset;
 }
 
 // 開始・終了フェンスに挟まれた生文字列から、フェンス行自体（開始側の
@@ -118,7 +139,7 @@ export function repairBrokenCodeFences(
       index += 1;
       continue;
     }
-    const startNode = findTrailingBrokenCodeStart(node);
+    const startNode = findTrailingBrokenCodeStart(node, sourceText);
     if (startNode === undefined) {
       result.push(node);
       index += 1;
