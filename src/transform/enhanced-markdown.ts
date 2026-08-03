@@ -99,6 +99,7 @@ interface HtmlLikeNode {
 }
 
 const restorableFragmentNodeTypes = new Set(['html', 'code', 'inlineCode']);
+const restorableHtmlOnlyNodeTypes = new Set(['html']);
 
 // callout/columns/tableの変換結果（生成した文字列そのもの、または再parse
 // したfragment）にリネーム痕跡が紛れ込む場合がある。table/columnsは
@@ -108,14 +109,22 @@ const restorableFragmentNodeTypes = new Set(['html', 'code', 'inlineCode']);
 // html/code/inlineCodeのいずれも復元対象にする（fragmentは元々table/columns
 // のHTMLブロック内にあった文字列だけが由来のため、元文書の正規のcode/
 // inlineCodeノードを壊す心配はない）。
-function restoreUnderscoreTagsDeep(node: HtmlLikeNode): void {
-  if (
-    restorableFragmentNodeTypes.has(node.type) &&
-    typeof node.value === 'string'
-  ) {
+//
+// 一方、1行に収まるsynced_block（inlineSyncedBlockChildren）の中身は元文書の
+// 1回目のparseで既にcode/inlineCodeノードとして認識済み＝リネーム対象外
+// だったノードそのものであり、fragment由来ではない。ここでcode/inlineCode
+// まで復元対象にすると、著者が本文にハイフン形（例: `<synced-block>`）を
+// インラインコードとして書いていた場合に誤って書き換えてしまう。そのため
+// inline経路ではhtml型のみを復元対象にする。
+function restoreUnderscoreTagsDeep(
+  node: HtmlLikeNode,
+  restorableTypes: ReadonlySet<string> = restorableFragmentNodeTypes,
+): void {
+  if (restorableTypes.has(node.type) && typeof node.value === 'string') {
     node.value = restoreKnownUnderscoreTags(node.value);
   }
-  for (const child of node.children ?? []) restoreUnderscoreTagsDeep(child);
+  for (const child of node.children ?? [])
+    restoreUnderscoreTagsDeep(child, restorableTypes);
 }
 
 function attributeValue(openingTag: string, name: string): string | undefined {
@@ -240,6 +249,15 @@ function columnsMarkdown(value: string): string | undefined {
 // url属性は開始タグ側にありbody抽出の対象外なので、リンクとして誤認識される
 // ことはない。
 function syncedBlockMarkdown(value: string): string | undefined {
+  const trimmed = value.trim();
+  const closingTag = '</synced-block>';
+  const closingStart = trimmed.toLowerCase().lastIndexOf(closingTag);
+  if (closingStart === -1) return elementBody(value, 'synced-block');
+  // HTMLブロックは空行まで後続行を吸収するため、閉じタグ直後（空行なし）に
+  // 本文が続く場合は同じノードにその本文が混入している。安全側に倒し、
+  // タグ単体で完結する場合（閉じタグ以降が空白のみ）に限って展開する。
+  if (trimmed.slice(closingStart + closingTag.length).trim() !== '')
+    return undefined;
   return elementBody(value, 'synced-block');
 }
 
@@ -404,7 +422,8 @@ function transformParent(parent: Parent): void {
     }
     const syncedBlockChildren = inlineSyncedBlockChildren(child);
     if (syncedBlockChildren !== undefined) {
-      for (const node of syncedBlockChildren) restoreUnderscoreTagsDeep(node);
+      for (const node of syncedBlockChildren)
+        restoreUnderscoreTagsDeep(node, restorableHtmlOnlyNodeTypes);
       if (syncedBlockChildren.length > 0)
         transformed.push({ type: 'paragraph', children: syncedBlockChildren });
       continue;

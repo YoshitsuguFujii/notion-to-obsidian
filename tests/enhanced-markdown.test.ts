@@ -228,6 +228,12 @@ describe('transformEnhancedMarkdown', () => {
     );
   });
 
+  it('synced_block終了タグ直後（空行なし）に本文が続く場合は展開せず元のHTMLを維持する', async () => {
+    const input =
+      '<synced_block url="https://example.com">\nBody\n</synced_block>\nTrailing text';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
   it('columns内にネストしたsynced_blockも元の綴りを保つ', async () => {
     const input =
       '<columns>\n<column>\n<synced_block url="https://example.com">Body</synced_block>\n</column>\n</columns>';
@@ -249,6 +255,14 @@ describe('transformEnhancedMarkdown', () => {
       '<table header-row="true"><tr><td>Name</td><td>Code</td></tr><tr><td>Example</td><td>`<synced_block/>`</td></tr></table>';
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(
       '| Name    | Code              |\n| ------- | ----------------- |\n| Example | `<synced_block/>` |\n',
+    );
+  });
+
+  it('synced_block内のインラインコードに著者が書いたハイフン形のタグ状文字列は書き換えない', async () => {
+    const input =
+      '<synced_block url="a">before `<synced-block>` after</synced_block>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'before `<synced-block>` after\n',
     );
   });
 });
