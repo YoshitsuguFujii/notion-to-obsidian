@@ -435,6 +435,10 @@ describe('transformEnhancedMarkdown', () => {
   it('差し戻した後続本文自体に崩壊コードフェンスがネストしていても再帰的に復元する', async () => {
     const input =
       '1. text\n   ```js\nline1\n   ```\n\n2. more\n   ```ts\nline2\n   ```\n';
+    // 隣接する2つの順序付きリストをremark-stringifyが1つの連続リストと
+    // 誤読されないようマーカーを`.`と`)`で交互に切り替えるため、2つ目は
+    // `2)`になる（remark-stringifyの標準挙動、本テストが壊しているの
+    // ではない）。
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(
       '1. text\n   ```js\n   line1\n   ```\n\n2) more\n   ```ts\n   line2\n   ```\n',
     );

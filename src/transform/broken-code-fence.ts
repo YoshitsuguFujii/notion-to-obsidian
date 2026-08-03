@@ -75,6 +75,24 @@ function extractTrailingContent(
 
 const fragmentProcessor = unified().use(remarkParse).use(remarkGfm);
 
+interface MaybePositioned {
+  position?: unknown;
+  children?: RootContent[];
+}
+
+// 差し戻すfragmentのノードはtrailing文字列基準のoffsetを持つ。呼び出し元
+// のtransformParentはこの後、元文書のsourceText基準でノードを再帰処理
+// するため、position情報を保持したままにすると、fragment内部（さらに
+// ネストしたlistItem等）で崩壊コードフェンスの検出が働いた場合に誤った
+// offsetでsourceTextをスライスし、無関係な文字列をコード本文として書き
+// 込みかねない。以後の処理がoffsetに依存する関数はoffset未定義を安全側
+// フォールバックとして扱う設計のため、position自体を再帰的に削除して
+// おけば以後は必ずフォールバックする。
+function stripPositionsDeep(node: MaybePositioned): void {
+  delete node.position;
+  for (const child of node.children ?? []) stripPositionsDeep(child);
+}
+
 // Notion Markdown APIは、番号付きリスト内のコードフェンスにおいて開始行
 // だけをリスト継続に必要な分だけインデントし、本文行をインデントしない
 // ことがある。CommonMarkのリスト継続判定は本文行のインデント不足を検出
@@ -122,13 +140,25 @@ export function repairBrokenCodeFences(
       index += 1;
       continue;
     }
+    let fragmentChildren: RootContent[] = [];
+    if (trailing !== '') {
+      try {
+        const fragment = fragmentProcessor.parse(trailing);
+        fragment.children = repairBrokenCodeFences(fragment.children, trailing);
+        for (const fragmentChild of fragment.children)
+          stripPositionsDeep(fragmentChild);
+        fragmentChildren = fragment.children;
+      } catch {
+        // 巻き込まれた本文をparseできない場合、中途半端に修復するより
+        // 安全側に倒し、この崩壊リストは変換せず元のASTを維持する。
+        result.push(node);
+        index += 1;
+        continue;
+      }
+    }
     startNode.value = rawContent;
     result.push(node);
-    if (trailing !== '') {
-      const fragment = fragmentProcessor.parse(trailing);
-      fragment.children = repairBrokenCodeFences(fragment.children, trailing);
-      result.push(...fragment.children);
-    }
+    result.push(...fragmentChildren);
     index = cursor + 1;
   }
   return result;
