@@ -37,8 +37,8 @@ function offsetOf(node: Code, edge: 'start' | 'end'): number | undefined {
 
 // 開始・終了フェンスに挟まれた生文字列から、フェンス行自体（開始側の
 // 改行、終了側の改行とインデント）だけを取り除き、コード本文を取り出す。
-// 本文行の元のインデント・空行はそのまま保持する（design.mdの安全不変
-// 条件：崩壊時に生じていたインデント・空行を保つ）。
+// 崩壊時に生じていた本文行の元のインデント・空行は、正規化・trimせず
+// そのまま保持する。
 function extractRawContent(
   sourceText: string,
   startNode: Code,

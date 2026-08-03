@@ -431,4 +431,12 @@ describe('transformEnhancedMarkdown', () => {
       '1. text\n   ```js\n   line1\n   line2\n   ```\n\nAfter list paragraph.\n',
     );
   });
+
+  it('差し戻した後続本文自体に崩壊コードフェンスがネストしていても再帰的に復元する', async () => {
+    const input =
+      '1. text\n   ```js\nline1\n   ```\n\n2. more\n   ```ts\nline2\n   ```\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   ```js\n   line1\n   ```\n\n2) more\n   ```ts\n   line2\n   ```\n',
+    );
+  });
 });
