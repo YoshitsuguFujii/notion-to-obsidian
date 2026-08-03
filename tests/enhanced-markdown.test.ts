@@ -265,4 +265,51 @@ describe('transformEnhancedMarkdown', () => {
       'before `<synced-block>` after\n',
     );
   });
+
+  it('span の color 属性のみを Obsidian ハイライト記法へ変換する', async () => {
+    const input = '<span color="orange">text</span>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe('==text==\n');
+  });
+
+  it('span の underline="true" 属性のみを下線タグへ変換する', async () => {
+    const input = '<span underline="true">text</span>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '<u>text</u>\n',
+    );
+  });
+
+  it('span の color と underline が両方ある場合、両方を重ねて適用する', async () => {
+    const input = '<span color="orange" underline="true">text</span>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '<u>==text==</u>\n',
+    );
+  });
+
+  it('span の discussion-urls 属性のみの場合、タグだけ外し中身を保持する', async () => {
+    const input = '<span discussion-urls="a,b">text</span>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe('text\n');
+  });
+
+  it('span の color と discussion-urls が併存する場合、color 変換を適用し discussion-urls は無視する', async () => {
+    const input = '<span color="orange" discussion-urls="a,b">text</span>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe('==text==\n');
+  });
+
+  it('color/underline/discussion-urls のいずれも持たない span は変換せず元の HTML を維持する', async () => {
+    const input = '<span class="foo">text</span>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('インラインコード内の span 状の文字列は変換しない', async () => {
+    const input = '`<span class="foo">text</span>`';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('同一段落内に複数の span が存在する場合、それぞれ個別に正しく変換する', async () => {
+    const input =
+      'A <span color="red">B</span> C <span underline="true">D</span> E';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'A ==B== C <u>D</u> E\n',
+    );
+  });
 });

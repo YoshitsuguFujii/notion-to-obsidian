@@ -410,7 +410,75 @@ function isTableOfContentsMarkdown(value: string): boolean {
   return trimmed.slice(closingIndex + 1).trim() === '';
 }
 
+const spanOpenPattern = /^<span\b/iu;
+
+function isSpanOpen(node: RootContent): boolean {
+  return node.type === 'html' && spanOpenPattern.test(node.value.trim());
+}
+
+function isSpanClose(node: RootContent): boolean {
+  return node.type === 'html' && node.value.trim().toLowerCase() === '</span>';
+}
+
+// <span color/underline/discussion-urls> をObsidian向けに変換する。開始・終了
+// タグが別々のhtmlノードとしてASTに載る（callout等と同様、remarkのinline HTML
+// 分割）ため、同一children配列内で開始タグ以降の最初の終了タグをペアとして
+// 扱う。ペアが同一配列内に見つからない場合、またはcolor/underline/
+// discussion-urlsのいずれも持たない場合（例: class属性のみ）は変換せず元の
+// HTMLノードのまま残す（誤って段落境界をまたいだ内容を巻き込まない安全側判定）。
+function expandSpans(children: RootContent[]): RootContent[] {
+  const result: RootContent[] = [];
+  let index = 0;
+  while (index < children.length) {
+    const node = children[index]!;
+    if (!isSpanOpen(node)) {
+      result.push(node);
+      index += 1;
+      continue;
+    }
+    let closeIndex = -1;
+    for (let cursor = index + 1; cursor < children.length; cursor += 1) {
+      if (isSpanClose(children[cursor]!)) {
+        closeIndex = cursor;
+        break;
+      }
+    }
+    if (closeIndex === -1) {
+      result.push(node);
+      index += 1;
+      continue;
+    }
+    const openingTag = (node as { value: string }).value.trim();
+    const inner = children.slice(index + 1, closeIndex);
+    const color = attributeValue(openingTag, 'color');
+    const hasUnderline = attributeValue(openingTag, 'underline') === 'true';
+    const hasDiscussionUrls =
+      attributeValue(openingTag, 'discussion-urls') !== undefined;
+    if (color === undefined && !hasUnderline && !hasDiscussionUrls) {
+      result.push(node, ...inner, children[closeIndex]!);
+    } else {
+      let wrapped: RootContent[] = inner;
+      if (color !== undefined)
+        wrapped = [
+          { type: 'html', value: '==' },
+          ...wrapped,
+          { type: 'html', value: '==' },
+        ];
+      if (hasUnderline)
+        wrapped = [
+          { type: 'html', value: '<u>' },
+          ...wrapped,
+          { type: 'html', value: '</u>' },
+        ];
+      result.push(...wrapped);
+    }
+    index = closeIndex + 1;
+  }
+  return result;
+}
+
 function transformParent(parent: Parent): void {
+  parent.children = expandSpans(parent.children as RootContent[]);
   const transformed: RootContent[] = [];
   for (const child of parent.children as RootContent[]) {
     const inline = inlineCallout(child);
