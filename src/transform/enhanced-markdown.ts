@@ -252,7 +252,8 @@ function syncedBlockMarkdown(value: string): string | undefined {
   const trimmed = value.trim();
   const closingTag = '</synced-block>';
   const closingStart = trimmed.toLowerCase().lastIndexOf(closingTag);
-  if (closingStart === -1) return elementBody(value, 'synced-block');
+  // 閉じタグが無ければ展開できない（elementBodyがundefinedを返す経路と同じ）。
+  if (closingStart === -1) return undefined;
   // HTMLブロックは空行まで後続行を吸収するため、閉じタグ直後（空行なし）に
   // 本文が続く場合は同じノードにその本文が混入している。安全側に倒し、
   // タグ単体で完結する場合（閉じタグ以降が空白のみ）に限って展開する。
