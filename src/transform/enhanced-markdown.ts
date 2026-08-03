@@ -412,8 +412,18 @@ function isTableOfContentsMarkdown(value: string): boolean {
 
 const spanOpenPattern = /^<span\b/iu;
 
+// CommonMarkのHTMLブロックは空行まで後続行を吸収するため、単独行の
+// `<span ...>`の直後（空行なし）に本文が続く場合、同じhtmlノードの
+// valueにその本文が混入する（table_of_contents/synced_blockと同型の
+// 問題）。タグ単体で完結する場合（trim後の値が開始タグの`>`で終わる
+// 場合）に限ってspan開始として扱い、そうでなければ安全側に倒して
+// 通常のhtmlノードとして素通しする。
 function isSpanOpen(node: RootContent): boolean {
-  return node.type === 'html' && spanOpenPattern.test(node.value.trim());
+  if (node.type !== 'html') return false;
+  const trimmed = node.value.trim();
+  if (!spanOpenPattern.test(trimmed)) return false;
+  const closingBracket = trimmed.indexOf('>');
+  return closingBracket !== -1 && closingBracket === trimmed.length - 1;
 }
 
 function isSpanClose(node: RootContent): boolean {

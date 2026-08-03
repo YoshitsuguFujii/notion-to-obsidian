@@ -315,6 +315,18 @@ describe('transformEnhancedMarkdown', () => {
     await expect(transformEnhancedMarkdown(input)).resolves.toBe('');
   });
 
+  it('開始タグ直後（空行なし）に本文が続く span は変換せず元の HTML を維持する', async () => {
+    const input = '<span color="red">\nhello\n\nworld\n\n</span>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '<span color="red">\nhello\n\nworld\n\n</span>\n',
+    );
+  });
+
+  it('コードフェンス内の span 状の文字列は変換しない', async () => {
+    const input = '```\n<span class="foo">text</span>\n```';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
   it('同一段落内に複数の span が存在する場合、それぞれ個別に正しく変換する', async () => {
     const input =
       'A <span color="red">B</span> C <span underline="true">D</span> E';
