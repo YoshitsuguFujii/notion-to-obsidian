@@ -1,4 +1,7 @@
 import type { Code, List, RootContent } from 'mdast';
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
+import remarkGfm from 'remark-gfm';
 
 function isEmptyCodeWithLang(node: RootContent): node is Code {
   return (
@@ -9,11 +12,9 @@ function isEmptyCodeWithLang(node: RootContent): node is Code {
   );
 }
 
-function isIsolatedEmptyCode(node: RootContent): node is Code {
+function isBareCode(node: RootContent): node is Code {
   return (
-    node.type === 'code' &&
-    node.value === '' &&
-    (node.lang === null || node.lang === undefined)
+    node.type === 'code' && (node.lang === null || node.lang === undefined)
   );
 }
 
@@ -52,15 +53,40 @@ function extractRawContent(
   return withoutLeadingNewline.replace(/\r?\n[ \t]*$/u, '');
 }
 
+// 閉じフェンス跡（孤立codeノード）は、CommonMark上「新たに開いたが閉じ
+// られていないコードフェンス」として扱われるため、その直後に他の本文が
+// 続く実データでは、次の実際のフェンスまたはEOFまでの本文をvalueへ
+// 巻き込んでしまう（value===''にならない）。巻き込まれた本文を生
+// Markdown文字列から取り出す。何も巻き込んでいない場合は空文字列を返す。
+function extractTrailingContent(
+  sourceText: string,
+  endNode: Code,
+): string | undefined {
+  if (endNode.value === '') return '';
+  const delimiterStart = offsetOf(endNode, 'start');
+  const contentEnd = offsetOf(endNode, 'end');
+  if (delimiterStart === undefined || contentEnd === undefined)
+    return undefined;
+  const afterDelimiterNewline = sourceText.indexOf('\n', delimiterStart);
+  if (afterDelimiterNewline === -1 || afterDelimiterNewline >= contentEnd)
+    return undefined;
+  return sourceText.slice(afterDelimiterNewline + 1, contentEnd);
+}
+
+const fragmentProcessor = unified().use(remarkParse).use(remarkGfm);
+
 // Notion Markdown APIは、番号付きリスト内のコードフェンスにおいて開始行
 // だけをリスト継続に必要な分だけインデントし、本文行をインデントしない
 // ことがある。CommonMarkのリスト継続判定は本文行のインデント不足を検出
 // するとリストをそこで終了させるため、本文行は独立したparagraphへ、
-// 閉じフェンス行は独立した空codeノードへ分裂する（崩壊シグネチャ: 空
-// code+lang付き → 連続paragraph → 孤立空code+lang無し）。生Markdown
-// 文字列から該当範囲を直接スライスし、元のインデント・空行を保ったまま
-// 正しいcodeノードとして再構成する。シグネチャが一部しか揃わない場合
-// （意図的な空コードブロック等）は変換せず元のASTを維持する。
+// 閉じフェンス行は独立したcodeノード（lang無し）へ分裂する（崩壊シグ
+// ネチャ: 空code+lang付き → 連続paragraph → 孤立code+lang無し）。生
+// Markdown文字列から該当範囲を直接スライスし、元のインデント・空行を
+// 保ったまま正しいcodeノードとして再構成する。閉じフェンス跡が後続本文
+// を巻き込んでいる場合は、その本文を取り出して再parseし、修復した
+// codeノードの直後へ差し戻す（後続本文自体は失わない）。シグネチャが
+// 一部しか揃わない場合（意図的な空コードブロック等）は変換せず元のAST
+// を維持する。
 export function repairBrokenCodeFences(
   children: RootContent[],
   sourceText: string,
@@ -84,23 +110,25 @@ export function repairBrokenCodeFences(
     while (children[cursor]?.type === 'paragraph') cursor += 1;
     const paragraphCount = cursor - (index + 1);
     const endNode = children[cursor];
-    if (
-      paragraphCount === 0 ||
-      endNode === undefined ||
-      !isIsolatedEmptyCode(endNode)
-    ) {
+    if (paragraphCount === 0 || endNode === undefined || !isBareCode(endNode)) {
       result.push(node);
       index += 1;
       continue;
     }
     const rawContent = extractRawContent(sourceText, startNode, endNode);
-    if (rawContent === undefined) {
+    const trailing = extractTrailingContent(sourceText, endNode);
+    if (rawContent === undefined || trailing === undefined) {
       result.push(node);
       index += 1;
       continue;
     }
     startNode.value = rawContent;
     result.push(node);
+    if (trailing !== '') {
+      const fragment = fragmentProcessor.parse(trailing);
+      fragment.children = repairBrokenCodeFences(fragment.children, trailing);
+      result.push(...fragment.children);
+    }
     index = cursor + 1;
   }
   return result;

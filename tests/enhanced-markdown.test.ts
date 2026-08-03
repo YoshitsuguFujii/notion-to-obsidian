@@ -423,4 +423,12 @@ describe('transformEnhancedMarkdown', () => {
       '1. text\n   ```js\n   **not bold** `inline` # heading\n   ```\n',
     );
   });
+
+  it('崩壊したコードフェンスの直後に本文が続く場合、コードを復元しつつ後続本文も保持する', async () => {
+    const input =
+      '1. text\n   ```js\nline1\nline2\n   ```\n\nAfter list paragraph.\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   ```js\n   line1\n   line2\n   ```\n\nAfter list paragraph.\n',
+    );
+  });
 });
