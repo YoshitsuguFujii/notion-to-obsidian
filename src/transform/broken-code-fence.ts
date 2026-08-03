@@ -27,12 +27,84 @@ function offsetOf(node: Code, edge: 'start' | 'end'): number | undefined {
 // position範囲になる（間に改行を含まない）。一方、開始・閉じフェンスが
 // 揃った意図的な空コードブロックは、開始行から閉じ行までの複数行が
 // position範囲になる。この違いで両者を区別し、後者（意図的な空コード
-// ブロック）を崩壊シグネチャの開始ノードとして誤検出しない。
+// ブロック）を崩壊シグネチャの開始・終了ノードとして誤検出しない。
+// ノードが文書末尾の行に位置する場合、position範囲の末尾に区切りの
+// 改行1つが含まれることがあるため、判定前にその1つだけを取り除く。
 function isUnclosedFenceLine(node: Code, sourceText: string): boolean {
   const start = offsetOf(node, 'start');
   const end = offsetOf(node, 'end');
   if (start === undefined || end === undefined) return false;
-  return !sourceText.slice(start, end).includes('\n');
+  const slice = sourceText.slice(start, end).replace(/\n$/u, '');
+  return !slice.includes('\n');
+}
+
+interface FenceMarker {
+  char: '`' | '~';
+  length: number;
+}
+
+const fenceMarkerLinePattern = /^ *(`{3,}|~{3,})([^\n]*)$/u;
+
+// 生Markdown文字列上でoffsetが指す物理行を取り出し、その行がfence marker
+// （`または~の3連続以上）で始まるかを判定する。開始フェンスは言語指定
+// （info string）を持ちうるため許容し、終了候補は`requireNoInfoString`で
+// info stringなしを必須にする（インデントコードブロックの誤認防止）。
+// インデント幅は絶対値では判定しない（リスト内フェンスはコンテナ相対の
+// インデントを持ち、番号付きリストの項目番号が2桁になるとマーカー幅が
+// 4文字になるため絶対インデントは変動する。また、Notion Markdown APIは
+// 崩壊時に閉じフェンス跡を本文行と同じ「インデントなし」で出力すること
+// もあるため、開始フェンスとのインデント一致を要求すると、この典型的な
+// パターンを誤って拒否してしまう）。
+function fenceMarkerAtLineOf(
+  sourceText: string,
+  offset: number,
+  { requireNoInfoString }: { requireNoInfoString: boolean },
+): FenceMarker | undefined {
+  const lineStart = sourceText.lastIndexOf('\n', offset - 1) + 1;
+  const lineEndIndex = sourceText.indexOf('\n', offset);
+  const lineEnd = lineEndIndex === -1 ? sourceText.length : lineEndIndex;
+  const line = sourceText.slice(lineStart, lineEnd);
+  const match = fenceMarkerLinePattern.exec(line);
+  if (!match) return undefined;
+  const marker = match[1]!;
+  const infoString = match[2]!.trim();
+  if (requireNoInfoString && infoString.length > 0) return undefined;
+  return { char: marker[0] as '`' | '~', length: marker.length };
+}
+
+// 崩壊シグネチャの終了候補（isBareCodeで見つかったlang無しcodeノード）が、
+// 本当に「崩壊した開始フェンスに対応する閉じフェンス跡」でありうるかを
+// 検証する。次の条件をすべて満たさない限り、終了候補として扱わない：
+// (1) 生Markdown文字列上で実際にfence marker行から始まり、info string
+//     （言語指定）を持たない（4スペースインデントによるコードブロックを
+//     誤って終了候補と認識しない）
+// (2) fence文字種が開始ノードと一致する
+// (3) fence marker長が開始ノード以上（CommonMarkの閉じフェンス条件）
+//
+// これらを満たしても「開始・終了が揃った独立した正常なコードブロック」を
+// 誤って通過させる場合がある（例: 崩壊開始の直後に別の完結したコード
+// ブロックが続くケース）。しかしその場合も、後続の`extractTrailingContent`
+// が巻き込んだ内容を生Markdown文字列から取り出して再parseするため、内容
+// 自体は失われない（段落として保持される。フォーマットは変わりうる）。
+// 誤検出防止と情報保全のバランスから、内容が失われない安全側フォール
+// バックがある以上、ここでは形式的な条件のみを検証する。
+function isCollapsedFenceTerminator(
+  startNode: Code,
+  endNode: Code,
+  sourceText: string,
+): boolean {
+  const startOffset = offsetOf(startNode, 'start');
+  const endOffset = offsetOf(endNode, 'start');
+  if (startOffset === undefined || endOffset === undefined) return false;
+  const openMarker = fenceMarkerAtLineOf(sourceText, startOffset, {
+    requireNoInfoString: false,
+  });
+  const closeMarker = fenceMarkerAtLineOf(sourceText, endOffset, {
+    requireNoInfoString: true,
+  });
+  if (openMarker === undefined || closeMarker === undefined) return false;
+  if (openMarker.char !== closeMarker.char) return false;
+  return closeMarker.length >= openMarker.length;
 }
 
 // 崩壊した番号付きリスト内コードフェンスの開始ノード（空code+lang付き、
@@ -149,7 +221,12 @@ export function repairBrokenCodeFences(
     while (children[cursor]?.type === 'paragraph') cursor += 1;
     const paragraphCount = cursor - (index + 1);
     const endNode = children[cursor];
-    if (paragraphCount === 0 || endNode === undefined || !isBareCode(endNode)) {
+    if (
+      paragraphCount === 0 ||
+      endNode === undefined ||
+      !isBareCode(endNode) ||
+      !isCollapsedFenceTerminator(startNode, endNode, sourceText)
+    ) {
       result.push(node);
       index += 1;
       continue;

@@ -132,6 +132,44 @@ function removeZeroWidthSpaces(value: string): string {
   return value.replaceAll(ZERO_WIDTH_SPACE, '');
 }
 
+// removeZeroWidthSpacesはstringify後のU+200Bを無条件に除去するため、
+// pre-parse正規化（insertZeroWidthSpaceForBoldFlanking）が挿入した分だけ
+// でなく、Notion本文に著者が元から書いていたU+200Bも区別なく削除して
+// しまう（安全不変条件8「黙って情報を捨てない」に抵触）。パイプライン
+// 先頭で既存のU+200Bを衝突しないsentinel（Private Use Areaの1文字）へ
+// 一時退避し、removeZeroWidthSpaces適用後に元へ復元することで、挿入分
+// のみを除去対象にする。sentinelが入力に既に含まれる場合（極めて低頻度）
+// は区別できないため退避自体を行わず、既存挙動（全除去）にフォールバック
+// する。
+const ZERO_WIDTH_SPACE_SENTINEL = String.fromCharCode(0xe000);
+
+interface ZeroWidthSpaceEscapeResult {
+  text: string;
+  didEscape: boolean;
+}
+
+function escapeExistingZeroWidthSpaces(
+  markdown: string,
+): ZeroWidthSpaceEscapeResult {
+  if (
+    !markdown.includes(ZERO_WIDTH_SPACE) ||
+    markdown.includes(ZERO_WIDTH_SPACE_SENTINEL)
+  )
+    return { text: markdown, didEscape: false };
+  return {
+    text: markdown.replaceAll(ZERO_WIDTH_SPACE, ZERO_WIDTH_SPACE_SENTINEL),
+    didEscape: true,
+  };
+}
+
+// escapeExistingZeroWidthSpacesが退避を行わなかった場合（U+200Bが元々
+// 無い、またはsentinelと衝突するため退避を諦めた場合）、本文中に元から
+// 含まれていたsentinel文字（U+E000）まで誤ってU+200Bへ書き換えてしまう
+// ため、退避を実際に行った場合のみ復元を実行する。
+function restoreEscapedZeroWidthSpaces(value: string): string {
+  return value.replaceAll(ZERO_WIDTH_SPACE_SENTINEL, ZERO_WIDTH_SPACE);
+}
+
 // リネーム後のタグ名が、削除・変換のいずれにも該当せずhtmlノードとして
 // そのまま出力に残る場合（例: 直後に空行なしで本文が続くtable_of_contents、
 // 変換が未実装のタグ）に、内部処理用のリネーム痕跡を元の綴りへ戻す。
@@ -655,8 +693,12 @@ const processor = unified()
 export async function transformEnhancedMarkdown(
   markdown: string,
 ): Promise<string> {
-  const renamed = renameKnownUnderscoreTags(markdown);
+  const { text: escaped, didEscape } = escapeExistingZeroWidthSpaces(markdown);
+  const renamed = renameKnownUnderscoreTags(escaped);
   const normalized = insertZeroWidthSpaceForBoldFlanking(renamed);
   const result = String(await processor.process(normalized));
-  return removeZeroWidthSpaces(result);
+  const withoutInsertedZeroWidthSpaces = removeZeroWidthSpaces(result);
+  return didEscape
+    ? restoreEscapedZeroWidthSpaces(withoutInsertedZeroWidthSpaces)
+    : withoutInsertedZeroWidthSpaces;
 }

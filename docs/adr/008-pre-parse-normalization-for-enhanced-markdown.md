@@ -27,6 +27,13 @@ pre-parse正規化は、既に`src/transform/signed-asset-urls.ts`で確立し�
 
 欠陥3（span装飾）は、既存のAST変換（`transformParent`の拡張）のみで対応可能なため、pre-parse正規化を必要としない。
 
+### 追記（2026-08-03・外部レビュー起点の追加修正）
+
+上記実装のレビューで、次の2件の残存欠陥が判明し追加対応した。
+
+- 欠陥4の修正漏れ: 崩壊シグネチャの終了候補ノードを`lang`の有無のみで判定していたため、4スペースインデントによるコードブロックを誤って終了候補と認識し中身を誤って吸収するケースがあった。終了候補が生Markdown文字列上で実際にfence marker行（`` ` ``または`~`の3連続以上、info stringなし、文字種・長さが開始フェンスと整合）であることを検証するよう修正した（`isCollapsedFenceTerminator`）。なお、開始・終了フェンスが揃った独立した正常なコードブロックがこの検証を通過してしまう場合があるが、後続の`extractTrailingContent`が巻き込んだ内容を再parseするため情報は失われない。
+- 欠陥5修正の副作用: `removeZeroWidthSpaces`が最終出力中のU+200Bを無条件に除去していたため、pre-parse正規化で挿入した分だけでなく、Notion本文に著者が元から書いていたU+200Bも区別なく削除していた。パイプライン先頭で既存のU+200Bを衝突しないsentinel文字（Private Use Areaの1文字）へ一時退避し、除去処理後に復元することで、挿入分のみを除去対象にするよう修正した。
+
 ### table_of_contentsの削除はADR-006「未知は保持」方針の例外
 
 ADR-006は「toggleと未知HTMLは情報保持のためそのまま残す」方針を採る。`table_of_contents`はこの原則の例外である。Notion自動生成の目次ウィジェットであり著者が記述した情報を一切含まないため、変換せず残すのではなく黙って削除する（削除しても情報損失にならない）。この判断はADR-006の一般方針を覆すものではなく、「自動生成で著者情報を含まないことが確実な特定の1タグ」に限定した個別の例外として扱う。
@@ -40,7 +47,7 @@ ADR-006は「toggleと未知HTMLは情報保持のためそのまま残す」方
 ## 代替案と不採用理由
 
 - **欠陥1・2の汎用リネーム（任意のアンダースコア入りタグを機械的にリネーム）**: コードブロック内でユーザーが本文として書いた`<my_tag>`等を誤って書き換えるリスクがあるため不採用。既知タグ名のホワイトリスト方式を採用した。
-- **欠陥5: 句読点・空白の判定ロジックを自前実装する案**: micromarkの分類関数（`unicodePunctuation`/`unicodeWhitespace`）に頼らず独自に正規表現等で判定する案は、remarkの実際の判定基準とズレて誤検出を招くリスクがあるため不採用。実装時に調査した結果、判定関数を提供する`micromark-util-character`は既にremark-parseの間接依存としてnode_modulesに存在しており、これを直接依存として明示的に追加した上でそのまま再利用する方式を採用した（将来のremark/micromarkアップデートでこの依存関係自体が変わるリスクは`.steering/claude/20260802-enhanced-markdown-fixes/tasklist.md`に既知の制約として記録済み）。
+- **欠陥5: 句読点・空白の判定ロジックを自前実装する案**: micromarkの分類関数（`unicodePunctuation`/`unicodeWhitespace`）に頼らず独自に正規表現等で判定する案は、remarkの実際の判定基準とズレて誤検出を招くリスクがあるため不採用。実装時に調査した結果、判定関数を提供する`micromark-util-character`は既にremark-parseの間接依存としてnode_modulesに存在しており、これを直接依存として明示的に追加した上でそのまま再利用する方式を採用した（将来のremark/micromarkのメジャーアップデートで内部依存のmicromarkバージョンが変わった場合、直接importしている分類関数の判定基準が実際のパーサの判定と乖離する可能性がある既知の制約として認識している。回帰テストがremark系の依存更新時に引き続き成功することを確認すれば乖離は検知できる）。
 - **table_of_contentsをHTMLコメント等で痕跡を残す案**: 27/31ファイルに出現するため本文が冗長になる。自動生成UIで著者情報を含まないため、黙って削除する方針を採用した。
 
 ## 影響
@@ -48,5 +55,5 @@ ADR-006は「toggleと未知HTMLは情報保持のためそのまま残す」方
 - `src/transform/enhanced-markdown.ts`にpre-parse正規化のヘルパー（`collectUneditableRanges`, `renameKnownUnderscoreTags`, `insertZeroWidthSpaceForBoldFlanking`等）と、AST変換の拡張（span変換、崩壊コードフェンス修復の呼び出し）が追加された。
 - `src/transform/broken-code-fence.ts`が新規追加コンポーネントとして加わった。
 - `package.json`に`micromark-util-character`を直接依存として追加した（既存のremark-parseの間接依存を明示化したもので、新規機能追加ではない）。
-- 変換結果が変わるため`TRANSFORM_VERSION`を`'8'`から`'9'`へバンプし、既存Vaultを再変換対象にした（`src/sync/orchestrator.ts`）。
+- 変換結果が変わるため`TRANSFORM_VERSION`を`'8'`から`'9'`へバンプし、既存Vaultを再変換対象にした（`src/sync/orchestrator.ts`）。上記追記の修正でも変換結果が変わるため、`'9'`から`'10'`へ再度バンプした。
 - pre-parse正規化はNotion固有の既知パターン（タグ名・flanking規則）に限定したホワイトリスト方式を維持し、ADR-006が禁じる「Markdown全体への正規表現置換」には踏み込まない。将来の欠陥修正でpre-parse正規化を追加する場合も、この限定範囲の原則を踏襲すること。

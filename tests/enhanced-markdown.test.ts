@@ -448,4 +448,61 @@ describe('transformEnhancedMarkdown', () => {
       '1. text\n   ```js\n   line1\n   ```\n\n2) more\n   ```ts\n   line2\n   ```\n',
     );
   });
+
+  it('リスト項目番号が2桁になりインデント幅が4スペース以上でも崩壊したコードフェンスが復元される', async () => {
+    const items = Array.from(
+      { length: 9 },
+      (_, i) => `${i + 1}. item${i + 1}`,
+    ).join('\n');
+    const input = `${items}\n10. text\n    \`\`\`js\nconsole.log(1);\n\`\`\`\n`;
+    const expected = `${items}\n10. text\n    \`\`\`js\n    console.log(1);\n    \`\`\`\n`;
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(expected);
+  });
+
+  it('崩壊開始の直後に続くインデントコードブロックを閉じフェンス跡と誤認せず内容を保持する', async () => {
+    const input = '1. text\n   ```js\nline1\n\n    separate\n    code\n';
+    // 崩壊シグネチャが揃わないため変換せず元のASTのままstringifyする
+    // （安全側フォールバック）。開始フェンスは独立した空コードブロックとして
+    // 出力される形になるが、"line1"・"separate"・"code"のいずれも失われない。
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   ```js\n   ```\n\nline1\n\n```\nseparate\ncode\n```\n',
+    );
+  });
+
+  it('崩壊開始の直後に完結した別のコードフェンスが続く場合、内容は失わず保持する', async () => {
+    const input = '1. text\n   ```js\nline1\n\n```\nplain code\n```\n';
+    // 独立した完結コードブロックの終了フェンスは形式上「fence marker行」
+    // の条件を満たすため崩壊シグネチャの終了候補として通過するが、
+    // extractTrailingContentが巻き込んだ内容を取り出し再parseするため、
+    // "line1"・"plain code"のいずれも失われない（開始フェンスの中身として
+    // "line1"が誤って復元される点はフォーマット上の副作用だが、安全不変
+    // 条件8が求めるのは情報の非消失であり、これは満たしている）。
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('line1');
+    expect(output).toContain('plain code');
+  });
+
+  it('本文に著者が元から書いたU+200Bは削除されずそのまま保持される', async () => {
+    const zwsp = String.fromCharCode(0x200b);
+    const input = `before${zwsp}after`;
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      `before${zwsp}after\n`,
+    );
+  });
+
+  it('著者記述のU+200Bと太字修復で挿入されたU+200Bが混在しても、挿入分だけが除去される', async () => {
+    const zwsp = String.fromCharCode(0x200b);
+    const input = `前${zwsp}後 限り**、実行時に変更する**ことができる`;
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      `前${zwsp}後 限り**、実行時に変更する**ことができる\n`,
+    );
+  });
+
+  it('U+200Bを含まない本文中の私用領域文字（sentinelと同じ文字）は書き換えられない', async () => {
+    const privateUseChar = String.fromCharCode(0xe000);
+    const input = `before${privateUseChar}after`;
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      `before${privateUseChar}after\n`,
+    );
+  });
 });
