@@ -456,6 +456,10 @@ function expandSpans(children: RootContent[]): RootContent[] {
       attributeValue(openingTag, 'discussion-urls') !== undefined;
     if (color === undefined && !hasUnderline && !hasDiscussionUrls) {
       result.push(node, ...inner, children[closeIndex]!);
+    } else if (inner.length === 0) {
+      // 中身が空の場合、`==`/`<u>`同士が隣接するだけの無意味な出力
+      // （例: `====`）になるため、何も残さない（安全不変条件8には
+      // 反しない。空synced_blockの既存挙動と同じ扱い）。
     } else {
       let wrapped: RootContent[] = inner;
       if (color !== undefined)

@@ -305,6 +305,16 @@ describe('transformEnhancedMarkdown', () => {
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
   });
 
+  it('終了タグが同一 children 配列内に見つからない span は変換せず開始タグを維持する', async () => {
+    const input = 'before <span color="red">text after';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('中身が空の span は何も残さない', async () => {
+    const input = '<span color="red"></span>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe('');
+  });
+
   it('同一段落内に複数の span が存在する場合、それぞれ個別に正しく変換する', async () => {
     const input =
       'A <span color="red">B</span> C <span underline="true">D</span> E';
