@@ -170,8 +170,10 @@ export function repairBrokenCodeFences(
           stripPositionsDeep(fragmentChild);
         fragmentChildren = fragment.children;
       } catch {
-        // 巻き込まれた本文をparseできない場合、中途半端に修復するより
-        // 安全側に倒し、この崩壊リストは変換せず元のASTを維持する。
+        // remark-parseは通常どのような文字列に対しても例外を投げないため
+        // 実行時には到達しない想定だが、中途半端に修復するより安全側に
+        // 倒し、この崩壊リストは変換せず元のASTを維持するフォールバック
+        // として残す。
         result.push(node);
         index += 1;
         continue;
