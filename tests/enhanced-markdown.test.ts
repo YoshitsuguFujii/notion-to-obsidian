@@ -354,21 +354,21 @@ describe('transformEnhancedMarkdown', () => {
     );
   });
 
-  it('開始**の直前が句読点自体の場合はそのまま正しく認識される（挿入不要）', async () => {
+  it('開始**の直前が句読点自体の場合も正しくstrongとして認識される', async () => {
     const input = '。**、text**続く';
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(
       '。**、text**続く\n',
     );
   });
 
-  it('文頭にある**は直前がないため既に正しく認識される（挿入不要）', async () => {
+  it('文頭にある**も正しくstrongとして認識される', async () => {
     const input = '**、text**続く';
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(
       '**、text**続く\n',
     );
   });
 
-  it('直後に文字がない**（文末）は変換対象にしない', async () => {
+  it('対をなす終了**がない**は本文としてそのまま保全される', async () => {
     const input = 'text**';
     const output = await transformEnhancedMarkdown(input);
     expect(output).toBe('text\\*\\*\n');
@@ -385,7 +385,7 @@ describe('transformEnhancedMarkdown', () => {
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
   });
 
-  it('最終出力にU+200Bが残らない', async () => {
+  it('最終出力に不可視文字が残らない', async () => {
     const input = '限り**、実行時に変更する**ことができる';
     const output = await transformEnhancedMarkdown(input);
     expect(output).not.toContain('\u200B');
