@@ -370,9 +370,9 @@ describe('transformEnhancedMarkdown', () => {
 
   it('直後に文字がない**（文末）は変換対象にしない', async () => {
     const input = 'text**';
-    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
-      'text\\*\\*\n',
-    );
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toBe('text\\*\\*\n');
+    expect(output).not.toContain('\u200B');
   });
 
   it('コードフェンス内の全角読点隣接**は変換しない', async () => {
