@@ -40,7 +40,7 @@ ADR-006は「toggleと未知HTMLは情報保持のためそのまま残す」方
 ## 代替案と不採用理由
 
 - **欠陥1・2の汎用リネーム（任意のアンダースコア入りタグを機械的にリネーム）**: コードブロック内でユーザーが本文として書いた`<my_tag>`等を誤って書き換えるリスクがあるため不採用。既知タグ名のホワイトリスト方式を採用した。
-- **欠陥5: micromark内部のflanking判定関数を直接呼び出す案**: 判定基準のズレによる誤検出リスクを避けられる利点があるが、内部APIへの依存は将来のremark/micromarkアップデートで壊れるリスクがある。実装時に調査した結果、`micromark-util-character`は既にremark-parseの間接依存としてnode_modulesに存在しており、直接依存として明示的に追加した上で採用した。
+- **欠陥5: 句読点・空白の判定ロジックを自前実装する案**: micromarkの分類関数（`unicodePunctuation`/`unicodeWhitespace`）に頼らず独自に正規表現等で判定する案は、remarkの実際の判定基準とズレて誤検出を招くリスクがあるため不採用。実装時に調査した結果、判定関数を提供する`micromark-util-character`は既にremark-parseの間接依存としてnode_modulesに存在しており、これを直接依存として明示的に追加した上でそのまま再利用する方式を採用した（将来のremark/micromarkアップデートでこの依存関係自体が変わるリスクは`.steering/claude/20260802-enhanced-markdown-fixes/tasklist.md`に既知の制約として記録済み）。
 - **table_of_contentsをHTMLコメント等で痕跡を残す案**: 27/31ファイルに出現するため本文が冗長になる。自動生成UIで著者情報を含まないため、黙って削除する方針を採用した。
 
 ## 影響
