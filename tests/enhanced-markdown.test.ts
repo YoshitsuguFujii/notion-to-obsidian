@@ -210,9 +210,22 @@ describe('transformEnhancedMarkdown', () => {
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
   });
 
-  it('削除・変換の対象外のアンダースコア入りタグ（synced_block）は元の綴りを保つ（文字化けしない）', async () => {
+  it('synced_blockはタグを外し中身をそのまま段落として残す', async () => {
     const input = '<synced_block url="https://example.com">Body</synced_block>';
-    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe('Body\n');
+  });
+
+  it('空のsynced_blockはエラーにならず何も残さない', async () => {
+    const input = '<synced_block url="https://example.com"></synced_block>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe('');
+  });
+
+  it('synced_block内のcalloutは展開後も既存のEnhanced Markdown変換が適用される', async () => {
+    const input =
+      '<synced_block url="https://example.com">\n<callout icon="💡">Note</callout>\n</synced_block>';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '> [!note]\n> Note\n',
+    );
   });
 
   it('columns内にネストしたsynced_blockも元の綴りを保つ', async () => {

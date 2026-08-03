@@ -1,4 +1,4 @@
-import type { Root, RootContent } from 'mdast';
+import type { PhrasingContent, Root, RootContent } from 'mdast';
 import type { Parent } from 'unist';
 import { unified, type Plugin } from 'unified';
 import remarkParse from 'remark-parse';
@@ -198,6 +198,25 @@ function inlineCallout(child: RootContent): string | undefined {
   return formatCallout(first.value, body);
 }
 
+// 1行に収まるsynced_block（例: `<synced_block ...>Body</synced_block>`）は、
+// 段落内の開始・終了タグに挟まれたinlineノードとしてASTに載る（callout同様）。
+// 中身のノードをそのまま段落の子として展開する。
+function inlineSyncedBlockChildren(
+  child: RootContent,
+): PhrasingContent[] | undefined {
+  if (child.type !== 'paragraph' || child.children.length < 2) return undefined;
+  const first = child.children[0];
+  const last = child.children.at(-1);
+  if (
+    first?.type !== 'html' ||
+    !first.value.toLowerCase().startsWith('<synced-block') ||
+    last?.type !== 'html' ||
+    last.value.toLowerCase() !== '</synced-block>'
+  )
+    return undefined;
+  return child.children.slice(1, -1);
+}
+
 function columnsMarkdown(value: string): string | undefined {
   const body = elementBody(value, 'columns');
   if (body === undefined) return undefined;
@@ -213,6 +232,14 @@ function columnsMarkdown(value: string): string | undefined {
   }
   while (output.at(-1) === '') output.pop();
   return output.join('\n');
+}
+
+// Notionの同期ブロック（synced_block、リネーム後synced-block）は、Obsidian側では
+// 単なる複製された本文として扱う（ユーザー確認済み: タグを外し中身をそのまま
+// 段落として残す）。url属性は開始タグ側にありbody抽出の対象外なので、
+// リンクとして誤認識されることはない。
+function syncedBlockMarkdown(value: string): string | undefined {
+  return elementBody(value, 'synced-block');
 }
 
 // `<table>` の中身は、tableMarkdown が丸ごと置換する対象になる。<tr>/<td> だけを
@@ -374,6 +401,13 @@ function transformParent(parent: Parent): void {
       });
       continue;
     }
+    const syncedBlockChildren = inlineSyncedBlockChildren(child);
+    if (syncedBlockChildren !== undefined) {
+      for (const node of syncedBlockChildren) restoreUnderscoreTagsDeep(node);
+      if (syncedBlockChildren.length > 0)
+        transformed.push({ type: 'paragraph', children: syncedBlockChildren });
+      continue;
+    }
     if (child.type === 'html') {
       if (isTableOfContentsMarkdown(child.value)) continue;
       const callout = calloutMarkdown(child.value);
@@ -397,6 +431,19 @@ function transformParent(parent: Parent): void {
       const table = tableMarkdown(child.value);
       if (table !== undefined) {
         const fragment = unified().use(remarkParse).use(remarkGfm).parse(table);
+        for (const node of fragment.children) restoreUnderscoreTagsDeep(node);
+        transformed.push(...fragment.children);
+        continue;
+      }
+      const syncedBlock = syncedBlockMarkdown(child.value);
+      if (syncedBlock !== undefined) {
+        const fragment = unified()
+          .use(remarkParse)
+          .use(remarkGfm)
+          .parse(syncedBlock);
+        // 中身にcallout等の既存Enhanced Markdown構文が入っていてもそのまま
+        // 維持し後段の既存変換が適用されるよう、再帰的に変換する。
+        transformParent(fragment);
         for (const node of fragment.children) restoreUnderscoreTagsDeep(node);
         transformed.push(...fragment.children);
         continue;
