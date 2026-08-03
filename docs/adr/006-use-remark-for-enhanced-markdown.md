@@ -24,3 +24,4 @@ Markdown API の `<unknown>` 位置確認にも remark AST を使い、code bloc
 
 - remark の stringify 結果を変える更新は Markdown 差分を生む可能性があるため、依存更新時に golden test を確認する。
 - Phase 4 の内部リンク変換も mdast node を対象とし、code と inline code を除外する。
+- remarkのparse自体が意図通りに機能しない欠陥（タグ名の制約、CommonMarkのリスト継続・flanking規則）への対応として、pre-parse正規化という設計要素を追加した。詳細は ADR-008 を参照。

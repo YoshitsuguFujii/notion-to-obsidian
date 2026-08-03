@@ -39,6 +39,18 @@
 - `src/transform/enhanced-markdown.ts` の `tableMarkdown`（table→Markdownテーブル変換）は、この実測に基づき table 直下を「空白・任意のcolgroup・trのみ」と仮定した厳密パーサーで実装しており、`<thead>`/`<tbody>`/`<tfoot>` でラップされた入力は意図的に非対応（変換せず生HTML維持）としている。将来Notion側の出力形式が変わった場合は、この実測結果を更新し、パーサーの許容範囲も合わせて見直すこと。
 - Block API の `table` block では、`table_row.cells` は公式仕様上「rich text配列の配列」（各セル自体がrich text配列）であり、`fallback-block-renderer.ts` の `table` ケースはこの前提（`cells`自体が配列であること・各セルも配列であること・長さが`table_width`と一致すること）を検証してから変換する。満たさない場合は変換せず`unsupported()`へ倒しsidecarへ保全する（API応答の欠損・仕様変更・mock不備を安全側に倒すため）。
 
+## Enhanced Markdown の既知の変換欠陥（実Vault実測・2026-08-02）
+
+`src/transform/enhanced-markdown.ts`が変換する "Enhanced Markdown" 文字列（Markdown API `retrieveMarkdown`が返す`markdown`フィールドの内容）に、Notion側の出力形式に起因する5件の変換欠陥が実データで確認された。実Vault（notion-to-obsidian管理下、31ファイル）を目視・remark再現テストで実測した。
+
+- **欠陥1（synced_block文字化け、3/31ファイル）**: `<synced_block url="...">...</synced_block>`のタグ名にアンダースコアを含む。remarkのHTMLタグ名判定はアンダースコアを許可しないためHTMLノードとして認識されず、地の文としてエスケープされ文字化けする（`\<synced\_block ...`）。中身をタグを外して段落として展開する。
+- **欠陥2（table_of_contents文字化け、27/31ファイル・最多）**: `<table_of_contents .../>`も同根の理由（タグ名のアンダースコア）で文字化けする。Notion自動生成の目次ウィジェットで著者情報を含まないため、変換せず削除する。
+- **欠陥3（span装飾の生HTML残存、17/31ファイル）**: `<span color="...">`, `<span underline="...">`, `<span discussion-urls="...">`が変換されず生HTMLのまま本文に残る。実測した属性の組み合わせ分布（span出現の内訳）: `color`のみ 154件（`color="orange"` 152件、`color="red"` 1件、`color="green"` 1件）、`underline="true"`のみ 130件、`color`と`underline`の両方 3件、`discussion-urls`のみ 3件、`discussion-urls`と`color`の併存 2件。`class`属性のみ等、上記いずれも持たないspanは著者記述のHTML/CSS例として変換せず現状維持する必要がある（コードブロック内のspan例との区別）。
+- **欠陥4（番号付きリスト内コードフェンスの崩壊、4/31ファイル）**: Notion Markdown APIは、番号付きリスト内のコードフェンスで開始行のみリスト継続に必要な分だけインデントし、本文行をインデントしない癖がある（推測: Notion側のMarkdown生成ロジックがリストマーカー幅の考慮を開始行にしか適用していない）。CommonMarkのリスト継続判定は本文行のインデント不足を検出するとリストをそこで終了させるため、開始フェンスが空codeノードに、本文行が独立paragraphに、閉じフェンスが孤立codeノードに分裂する。生Markdown文字列から該当範囲を直接スライスして修復する。
+- **欠陥5（全角句読点隣接の太字破損、17/31ファイル）**: `**太字**`の直後が全角句読点（「、」「。」「」」「』」等）かつ直前が非空白・非句読点の場合、CommonMarkのflanking規則により開始デリミタとして認識されず`**`がエスケープされる。**これはCommonMark仕様上の正しい挙動であり、Notion側の不具合ではない**（欠陥1〜4とは無関係の別原因）。U+200B（ゼロ幅スペース）を該当箇所へ一時的に挿入しleft-flankingを成立させ、最終出力からは除去する。
+
+対応は`src/transform/enhanced-markdown.ts`（欠陥1・2・3・5）と新規`src/transform/broken-code-fence.ts`（欠陥4）に実装済み。詳細な設計判断は`docs/adr/008-pre-parse-normalization-for-enhanced-markdown.md`を参照。
+
 ## Block API（フォールバック・補助）
 
 - Markdown API だけで済ませられると仮定しない。以下で Block API を補助的に使う:
