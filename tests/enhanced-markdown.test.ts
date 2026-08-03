@@ -334,4 +334,60 @@ describe('transformEnhancedMarkdown', () => {
       'A ==B== C <u>D</u> E\n',
     );
   });
+
+  it('全角読点直後の**太字**が正しくstrongとして認識される', async () => {
+    const input = '限り**、実行時に変更する**ことができる';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '限り**、実行時に変更する**ことができる\n',
+    );
+  });
+
+  it('句読点の種類（。」』）が直後にある場合も正しく認識される', async () => {
+    await expect(transformEnhancedMarkdown('前**。後**続')).resolves.toBe(
+      '前**。後**続\n',
+    );
+    await expect(transformEnhancedMarkdown('前**」後**続')).resolves.toBe(
+      '前**」後**続\n',
+    );
+    await expect(transformEnhancedMarkdown('前**』後**続')).resolves.toBe(
+      '前**』後**続\n',
+    );
+  });
+
+  it('開始**の直前が句読点自体の場合はそのまま正しく認識される（挿入不要）', async () => {
+    const input = '。**、text**続く';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '。**、text**続く\n',
+    );
+  });
+
+  it('文頭にある**は直前がないため既に正しく認識される（挿入不要）', async () => {
+    const input = '**、text**続く';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '**、text**続く\n',
+    );
+  });
+
+  it('直後に文字がない**（文末）は変換対象にしない', async () => {
+    const input = 'text**';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'text\\*\\*\n',
+    );
+  });
+
+  it('コードフェンス内の全角読点隣接**は変換しない', async () => {
+    const input = '```\n限り**、text**続く\n```';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('インラインコード内の全角読点隣接**は変換しない', async () => {
+    const input = '`限り**、text**続く`';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('最終出力にU+200Bが残らない', async () => {
+    const input = '限り**、実行時に変更する**ことができる';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).not.toContain('​');
+  });
 });

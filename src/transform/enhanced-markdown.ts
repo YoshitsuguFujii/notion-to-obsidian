@@ -4,6 +4,10 @@ import { unified, type Plugin } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkStringify from 'remark-stringify';
+import {
+  unicodePunctuation,
+  unicodeWhitespace,
+} from 'micromark-util-character';
 import { buildMarkdownTableText } from './table-markdown.js';
 
 interface Range {
@@ -77,6 +81,54 @@ function renameKnownUnderscoreTags(markdown: string): string {
     cursor = index + match[0].length;
   }
   return result + markdown.slice(cursor);
+}
+
+const ZERO_WIDTH_SPACE = '​';
+
+// CommonMarkのflanking規則では、`**`の直後が（Unicode）句読点かつ直前が
+// 空白・句読点でない場合、開始デリミタになれずエスケープされる
+// （例: 「限り**、実行時に...**」の1つ目の**）。micromarkが実際の判定に
+// 使うunicodePunctuation/unicodeWhitespaceをそのまま再利用し、判定基準の
+// ズレによる誤検出を避ける。該当箇所の`**`直後にU+200B（ゼロ幅スペース）
+// を挿入し、直後の文字を句読点以外に見せることでleft-flankingを成立させる。
+// U+200Bはstringify後に除去する（removeZeroWidthSpaces）。
+function insertZeroWidthSpaceForBoldFlanking(markdown: string): string {
+  if (!markdown.includes('**')) return markdown;
+  let uneditableRanges: Range[];
+  try {
+    uneditableRanges = collectUneditableRanges(markdown);
+  } catch {
+    return markdown;
+  }
+  const insertionPoints: number[] = [];
+  for (const match of markdown.matchAll(/\*\*/gu)) {
+    const index = match.index;
+    if (isWithinRange(index, uneditableRanges)) continue;
+    const afterChar = markdown[index + 2];
+    if (
+      afterChar === undefined ||
+      !unicodePunctuation(afterChar.codePointAt(0)!)
+    )
+      continue;
+    const beforeChar = index > 0 ? markdown[index - 1] : undefined;
+    if (beforeChar === undefined) continue;
+    const beforeCode = beforeChar.codePointAt(0)!;
+    if (unicodeWhitespace(beforeCode) || unicodePunctuation(beforeCode))
+      continue;
+    insertionPoints.push(index + 2);
+  }
+  if (insertionPoints.length === 0) return markdown;
+  let result = '';
+  let cursor = 0;
+  for (const point of insertionPoints) {
+    result += markdown.slice(cursor, point) + ZERO_WIDTH_SPACE;
+    cursor = point;
+  }
+  return result + markdown.slice(cursor);
+}
+
+function removeZeroWidthSpaces(value: string): string {
+  return value.replaceAll(ZERO_WIDTH_SPACE, '');
 }
 
 // リネーム後のタグ名が、削除・変換のいずれにも該当せずhtmlノードとして
@@ -596,6 +648,8 @@ const processor = unified()
 export async function transformEnhancedMarkdown(
   markdown: string,
 ): Promise<string> {
-  const normalized = renameKnownUnderscoreTags(markdown);
-  return String(await processor.process(normalized));
+  const renamed = renameKnownUnderscoreTags(markdown);
+  const normalized = insertZeroWidthSpaceForBoldFlanking(renamed);
+  const result = String(await processor.process(normalized));
+  return removeZeroWidthSpaces(result);
 }

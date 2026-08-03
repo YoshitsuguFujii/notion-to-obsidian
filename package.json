@@ -23,6 +23,7 @@
     "@notionhq/client": "^5.1.0",
     "better-sqlite3": "^12.4.1",
     "commander": "^14.0.2",
+    "micromark-util-character": "^2.0.0",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "remark-stringify": "^11.0.0",
