@@ -397,4 +397,30 @@ describe('transformEnhancedMarkdown', () => {
       'これは**太字**、です\n',
     );
   });
+
+  it('番号付きリスト内で崩壊したコードフェンスが正しいcodeブロックとして復元される', async () => {
+    const input =
+      '1. text\n   ```javascript\nconsole.log(1);\nconsole.log(2);\n   ```\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   ```javascript\n   console.log(1);\n   console.log(2);\n   ```\n',
+    );
+  });
+
+  it('リスト項目内に意図的に書かれた空のコードブロックは変換されない', async () => {
+    const input = '1. text\n\n   ```js\n   ```\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(input);
+  });
+
+  it('リスト外（トップレベル）の通常のコードフェンスは変更されない', async () => {
+    const input = '```js\nconsole.log(1);\n```\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(input);
+  });
+
+  it('復元後のコード本文にMarkdown特殊文字がエスケープされず保持される', async () => {
+    const input =
+      '1. text\n   ```js\n**not bold** `inline` # heading\n   ```\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   ```js\n   **not bold** `inline` # heading\n   ```\n',
+    );
+  });
 });

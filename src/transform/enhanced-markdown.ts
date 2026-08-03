@@ -9,6 +9,7 @@ import {
   unicodeWhitespace,
 } from 'micromark-util-character';
 import { buildMarkdownTableText } from './table-markdown.js';
+import { repairBrokenCodeFences } from './broken-code-fence.js';
 
 interface Range {
   start: number;
@@ -556,8 +557,12 @@ function expandSpans(children: RootContent[]): RootContent[] {
   return result;
 }
 
-function transformParent(parent: Parent): void {
+function transformParent(parent: Parent, sourceText: string): void {
   parent.children = expandSpans(parent.children as RootContent[]);
+  parent.children = repairBrokenCodeFences(
+    parent.children as RootContent[],
+    sourceText,
+  );
   const transformed: RootContent[] = [];
   for (const child of parent.children as RootContent[]) {
     const inline = inlineCallout(child);
@@ -611,7 +616,9 @@ function transformParent(parent: Parent): void {
           .parse(syncedBlock);
         // 中身にcallout等の既存Enhanced Markdown構文が入っていてもそのまま
         // 維持し後段の既存変換が適用されるよう、再帰的に変換する。
-        transformParent(fragment);
+        // fragmentはsyncedBlock文字列を独立に再parseしたものなので、
+        // 位置オフセットの基準もsyncedBlock自身になる。
+        transformParent(fragment, syncedBlock);
         for (const node of fragment.children) restoreUnderscoreTagsDeep(node);
         transformed.push(...fragment.children);
         continue;
@@ -623,15 +630,15 @@ function transformParent(parent: Parent): void {
       continue;
     }
     if ('children' in child && Array.isArray(child.children)) {
-      transformParent(child);
+      transformParent(child, sourceText);
     }
     transformed.push(child);
   }
   parent.children = transformed;
 }
 
-const notionEnhancedElements: Plugin<[], Root> = () => (tree) => {
-  transformParent(tree);
+const notionEnhancedElements: Plugin<[], Root> = () => (tree, file) => {
+  transformParent(tree, String(file));
 };
 
 const processor = unified()
