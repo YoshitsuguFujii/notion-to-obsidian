@@ -234,10 +234,11 @@ function columnsMarkdown(value: string): string | undefined {
   return output.join('\n');
 }
 
-// Notionの同期ブロック（synced_block、リネーム後synced-block）は、Obsidian側では
-// 単なる複製された本文として扱う（ユーザー確認済み: タグを外し中身をそのまま
-// 段落として残す）。url属性は開始タグ側にありbody抽出の対象外なので、
-// リンクとして誤認識されることはない。
+// Notionの同期ブロック（synced_block、リネーム後synced-block）は、複数箇所に
+// 同一内容を複製表示するUI機能であり、片方向ミラーであるObsidian側では
+// 複製元・複製先の区別に意味が無い。タグを外し中身をそのまま段落として残す。
+// url属性は開始タグ側にありbody抽出の対象外なので、リンクとして誤認識される
+// ことはない。
 function syncedBlockMarkdown(value: string): string | undefined {
   return elementBody(value, 'synced-block');
 }
