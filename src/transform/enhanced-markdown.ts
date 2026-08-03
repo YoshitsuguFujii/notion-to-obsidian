@@ -420,6 +420,49 @@ function isSpanClose(node: RootContent): boolean {
   return node.type === 'html' && node.value.trim().toLowerCase() === '</span>';
 }
 
+function findSpanCloseIndex(
+  children: readonly RootContent[],
+  fromIndex: number,
+): number {
+  for (let cursor = fromIndex; cursor < children.length; cursor += 1) {
+    if (isSpanClose(children[cursor]!)) return cursor;
+  }
+  return -1;
+}
+
+// color/underline/discussion-urls属性に応じてspanの中身を変換する。
+// いずれも持たない場合（例: class属性のみ）はundefinedを返し、
+// 呼び出し側で元のHTMLノードをそのまま残す判断に使う。
+function transformSpanContent(
+  openingTag: string,
+  inner: readonly RootContent[],
+): RootContent[] | undefined {
+  const color = attributeValue(openingTag, 'color');
+  const hasUnderline = attributeValue(openingTag, 'underline') === 'true';
+  const hasDiscussionUrls =
+    attributeValue(openingTag, 'discussion-urls') !== undefined;
+  if (color === undefined && !hasUnderline && !hasDiscussionUrls)
+    return undefined;
+  // 中身が空の場合、`==`/`<u>`同士が隣接するだけの無意味な出力
+  // （例: `====`）になるため、何も残さない（安全不変条件8には
+  // 反しない。空synced_blockの既存挙動と同じ扱い）。
+  if (inner.length === 0) return [];
+  let wrapped: RootContent[] = [...inner];
+  if (color !== undefined)
+    wrapped = [
+      { type: 'html', value: '==' },
+      ...wrapped,
+      { type: 'html', value: '==' },
+    ];
+  if (hasUnderline)
+    wrapped = [
+      { type: 'html', value: '<u>' },
+      ...wrapped,
+      { type: 'html', value: '</u>' },
+    ];
+  return wrapped;
+}
+
 // <span color/underline/discussion-urls> をObsidian向けに変換する。開始・終了
 // タグが別々のhtmlノードとしてASTに載る（callout等と同様、remarkのinline HTML
 // 分割）ため、同一children配列内で開始タグ以降の最初の終了タグをペアとして
@@ -436,46 +479,16 @@ function expandSpans(children: RootContent[]): RootContent[] {
       index += 1;
       continue;
     }
-    let closeIndex = -1;
-    for (let cursor = index + 1; cursor < children.length; cursor += 1) {
-      if (isSpanClose(children[cursor]!)) {
-        closeIndex = cursor;
-        break;
-      }
-    }
+    const closeIndex = findSpanCloseIndex(children, index + 1);
     if (closeIndex === -1) {
       result.push(node);
       index += 1;
       continue;
     }
-    const openingTag = (node as { value: string }).value.trim();
     const inner = children.slice(index + 1, closeIndex);
-    const color = attributeValue(openingTag, 'color');
-    const hasUnderline = attributeValue(openingTag, 'underline') === 'true';
-    const hasDiscussionUrls =
-      attributeValue(openingTag, 'discussion-urls') !== undefined;
-    if (color === undefined && !hasUnderline && !hasDiscussionUrls) {
-      result.push(node, ...inner, children[closeIndex]!);
-    } else if (inner.length === 0) {
-      // 中身が空の場合、`==`/`<u>`同士が隣接するだけの無意味な出力
-      // （例: `====`）になるため、何も残さない（安全不変条件8には
-      // 反しない。空synced_blockの既存挙動と同じ扱い）。
-    } else {
-      let wrapped: RootContent[] = inner;
-      if (color !== undefined)
-        wrapped = [
-          { type: 'html', value: '==' },
-          ...wrapped,
-          { type: 'html', value: '==' },
-        ];
-      if (hasUnderline)
-        wrapped = [
-          { type: 'html', value: '<u>' },
-          ...wrapped,
-          { type: 'html', value: '</u>' },
-        ];
-      result.push(...wrapped);
-    }
+    const openingTag = (node as { value: string }).value.trim();
+    const transformed = transformSpanContent(openingTag, inner);
+    result.push(...(transformed ?? [node, ...inner, children[closeIndex]!]));
     index = closeIndex + 1;
   }
   return result;
