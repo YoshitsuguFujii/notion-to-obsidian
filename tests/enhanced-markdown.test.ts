@@ -388,6 +388,13 @@ describe('transformEnhancedMarkdown', () => {
   it('最終出力にU+200Bが残らない', async () => {
     const input = '限り**、実行時に変更する**ことができる';
     const output = await transformEnhancedMarkdown(input);
-    expect(output).not.toContain('​');
+    expect(output).not.toContain('\u200B');
+  });
+
+  it('終了**の直後に句読点が続く場合も既存の強調が壊れない（回帰）', async () => {
+    const input = 'これは**太字**、です';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'これは**太字**、です\n',
+    );
   });
 });

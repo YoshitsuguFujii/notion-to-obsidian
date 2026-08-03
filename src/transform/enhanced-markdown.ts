@@ -83,7 +83,7 @@ function renameKnownUnderscoreTags(markdown: string): string {
   return result + markdown.slice(cursor);
 }
 
-const ZERO_WIDTH_SPACE = '​';
+const ZERO_WIDTH_SPACE = '\u200B';
 
 // CommonMarkのflanking規則では、`**`の直後が（Unicode）句読点かつ直前が
 // 空白・句読点でない場合、開始デリミタになれずエスケープされる
