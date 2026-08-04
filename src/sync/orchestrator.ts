@@ -93,7 +93,18 @@ const TOOL_VERSION = '0.1.0';
 // sentinel退避方式で著者記述分を保全するよう修正。これらのパターンを含む
 // ページ（旧実装では本文の一部消失・不可視文字の消失のまま変換していた）
 // の生成物が変わる。
-const TRANSFORM_VERSION = '10';
+// v11: v10修正の境界ケース2件を修正した。(1) 終了候補の先頭空白に上限が
+// なかったため、4スペースインデントコードの内容が偶然fence marker風の
+// 文字列で始まる場合に誤って終了ノードと認識し内容を消失させていたのを、
+// 先頭空白0〜3文字に制限して防止、(2) 崩壊開始の直後に開始・終了フェンスが
+// 揃った独立した正常なコードブロックが続く場合、そのコード内容が生Markdown
+// 文字列として再parseされ通常のMarkdown構文として変換されてしまう
+// （code内を変更しない安全不変条件に抵触）のを、終了候補自身が有効な
+// 閉じフェンス行を持つ場合は崩壊シグネチャとして扱わないfail-closed方針に
+// 変更して防止。あわせてU+200B退避のsentinelを単一固定文字から複数候補の
+// 動的選択に変更し、sentinel文字自体が本文に既存する場合の衝突リスクを
+// 低減した。これらのパターンを含むページの生成物が変わる。
+const TRANSFORM_VERSION = '11';
 function signedUrlSafetyMessage(notionIds: ReadonlySet<string>): string {
   return `Cannot safely process retained Notion signed asset URLs on page ID(s): ${[...notionIds].sort().join(', ')}. One or more URLs could not be parsed, or their extent could not be determined from the surrounding syntax. A URL is only safe to process inside a Markdown link or image destination, an autolink such as <URL>, or a quoted HTML attribute; a bare URL is not, even when it is the whole value. In Notion, put the URL into one of those forms, then run sync --dry-run to verify the correction before syncing. Inside a code block, inline code, a page title, or a database property, none of those forms are available; remove the signed URL from that value or exclude the page from the sync instead.`;
 }

@@ -438,14 +438,59 @@ describe('transformEnhancedMarkdown', () => {
     );
   });
 
-  it('差し戻した後続本文自体に崩壊コードフェンスがネストしていても再帰的に復元する', async () => {
+  it('崩壊終了フェンス跡が後続の別リストの崩壊フェンスを巻き込み、その閉じ行が独立コードブロックの終了フェンスに見える場合、誤って中身をMarkdownとして再解釈しない', async () => {
     const input =
       '1. text\n   ```js\nline1\n   ```\n\n2. more\n   ```ts\nline2\n   ```\n';
-    // 隣接する2つの順序付きリストをremark-stringifyが1つの連続リストと
-    // 誤読されないようマーカーを`.`と`)`で交互に切り替えるため、2つ目は
-    // `2)`になる。
+    // 1番目のリストの崩壊終了フェンス跡は、後続の2番目のリスト全体を
+    // 巻き込む（value非空）。巻き込んだ内容の最後の行（2番目のリストの
+    // 本当の閉じフェンス）が、たまたま有効な終了フェンス行に見えるため、
+    // hasOwnClosingFenceLineが「独立した正常なコードブロック」と判定し
+    // 崩壊シグネチャの終了ノードとして扱わない（fail-closed）。1番目の
+    // リストの崩壊は修復されないままになるが（既知の制約）、"line1"・
+    // "2. more"・"line2"のいずれのテキストも失われず、Markdown構文
+    // として誤って再解釈もされない（内容に```を含むためstringifyが
+    // 自動的に4連続バッククォートのフェンスで囲む）。
+    const output = await transformEnhancedMarkdown(input);
+    // 仕様の核心（テキスト内容が失われないこと）をstringifyのフォーマット
+    // 副産物とは独立に固定する。
+    expect(output).toContain('line1');
+    expect(output).toContain('2. more');
+    expect(output).toContain('line2');
+    expect(output).toBe(
+      '1. text\n   ```js\n   ```\n\nline1\n\n````\n\n2. more\n```ts\nline2\n````\n',
+    );
+  });
+
+  it('隣接する2つの崩壊リストがフェンス文字種違いで連続する場合、両方とも再帰的に修復される', async () => {
+    const input =
+      '1. text\n   ```js\nline1\n   ```\n\n2. more\n   ~~~ts\nline2\n   ~~~\n';
+    // 1番目は```、2番目は~~~を使うため、1番目の崩壊終了フェンス跡の
+    // 巻き込み範囲の最後の行（2番目の閉じフェンス~~~）はhasOwnClosingFenceLine
+    // の文字種チェック（marker[0] === ownOpeningMarker.char）で一致せず、
+    // 独立した正常なコードブロックとは判定されない。1番目の崩壊は正しく
+    // 修復され、差し戻したtrailingがrepairBrokenCodeFencesへ再帰的に渡され、
+    // 2番目の崩壊（```とは異なるフェンス文字種）も正しく修復される。
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(
       '1. text\n   ```js\n   line1\n   ```\n\n2) more\n   ```ts\n   line2\n   ```\n',
+    );
+  });
+
+  it('巻き込んだ後続本文の末尾に閉じフェンス行が現れない場合、1番目の崩壊は修復され後続内容は失われない', async () => {
+    const input =
+      '1. text\n   ```js\nline1\n   ```\n\n2. more\n   ```ts\nline2\n\nAfter.\n';
+    // 1番目のリストの崩壊終了フェンス跡が巻き込む範囲（2番目のリストの
+    // 崩壊開始・本文・後続段落）に、閉じフェンスに見える行が一つも
+    // 現れないため、hasOwnClosingFenceLineはfalseを返し、1番目の崩壊は
+    // 正しく修復される。差し戻したtrailingはrepairBrokenCodeFencesへ
+    // 再帰的に渡されるが、2番目のリストは閉じフェンスがないため崩壊
+    // シグネチャが揃わず変換されない（"2. more"・"line2"・"After."の
+    // いずれも失われない）。
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('more');
+    expect(output).toContain('line2');
+    expect(output).toContain('After.');
+    expect(output).toBe(
+      '1. text\n   ```js\n   line1\n   ```\n\n2) more\n   ```ts\n   ```\n\nline2\n\nAfter.\n',
     );
   });
 
@@ -469,17 +514,38 @@ describe('transformEnhancedMarkdown', () => {
     );
   });
 
-  it('崩壊開始の直後に完結した別のコードフェンスが続く場合、内容は失わず保持する', async () => {
-    const input = '1. text\n   ```js\nline1\n\n```\nplain code\n```\n';
-    // 独立した完結コードブロックの終了フェンスは形式上「fence marker行」
-    // の条件を満たすため崩壊シグネチャの終了候補として通過するが、
-    // extractTrailingContentが巻き込んだ内容を取り出し再parseするため、
-    // "line1"・"plain code"のいずれも失われない（開始フェンスの中身として
-    // "line1"が誤って復元される点はフォーマット上の副作用だが、安全不変
-    // 条件8が求めるのは情報の非消失であり、これは満たしている）。
+  it('崩壊開始の直後に完結した別のコードフェンスが続く場合、そのコード内容を誤ってMarkdownとして変換しない', async () => {
+    const input =
+      '1. text\n   ```js\nline1\n\n```\n**not bold** # not heading\n```\n';
+    // 独立した完結コードブロックの終了フェンスを崩壊シグネチャの終了候補
+    // として誤認識すると、その中身が生Markdown文字列として再parseされ、
+    // コード内容（**not bold**等）が通常のMarkdown構文として変換されて
+    // しまう（AGENTS.mdの安全不変条件「code内を変更しない」に抵触）。
+    // 崩壊シグネチャとして扱わず変換をスキップする（安全側フォールバック。
+    // 崩壊開始ノードが独立した空コードブロックとして出力される形式上の
+    // 変化はあるが、コード内容は生のまま保持されstrongノード等へ変換
+    // されない）。
     const output = await transformEnhancedMarkdown(input);
-    expect(output).toContain('line1');
-    expect(output).toContain('plain code');
+    // 仕様の核心（**not bold**がMarkdown構文として再解釈されずstrong
+    // ノード等へ変換されないこと）を、remark-stringifyのフォーマット
+    // 副産物とは独立に固定する。
+    expect(output).toContain('**not bold** # not heading');
+    expect(output).toBe(
+      '1. text\n   ```js\n   ```\n\nline1\n\n```\n**not bold** # not heading\n```\n',
+    );
+  });
+
+  it('崩壊開始の直後にインデントコードブロックが続き、その内容がフェンス記号で始まる場合でも内容を保持する', async () => {
+    const input = '1. text\n   ```js\nline1\n\n    ```\n    secret\n';
+    // 終了候補が4スペースインデントのコードブロック（フェンスでない）で
+    // あり、その内容の1行目がたまたま```で始まる場合でも、終了候補として
+    // 誤認識せず、著者が書いた```という文字列自体を失わない（stringifyは
+    // 内容に```を含むため自動的に4連続バッククォートのフェンスで囲む）。
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('```\nsecret');
+    expect(output).toBe(
+      '1. text\n   ```js\n   ```\n\nline1\n\n````\n```\nsecret\n````\n',
+    );
   });
 
   it('本文に著者が元から書いたU+200Bは削除されずそのまま保持される', async () => {
@@ -503,6 +569,15 @@ describe('transformEnhancedMarkdown', () => {
     const input = `before${privateUseChar}after`;
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(
       `before${privateUseChar}after\n`,
+    );
+  });
+
+  it('U+200Bと既定sentinel（U+E000）が同時に含まれる場合でも、別の私用領域文字へ退避し両方保持する', async () => {
+    const zwsp = String.fromCharCode(0x200b);
+    const defaultSentinel = String.fromCharCode(0xe000);
+    const input = `before${zwsp}middle${defaultSentinel}after`;
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      `before${zwsp}middle${defaultSentinel}after\n`,
     );
   });
 });

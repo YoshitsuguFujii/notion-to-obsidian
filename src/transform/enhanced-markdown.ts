@@ -138,36 +138,49 @@ function removeZeroWidthSpaces(value: string): string {
 // しまう（安全不変条件8「黙って情報を捨てない」に抵触）。パイプライン
 // 先頭で既存のU+200Bを衝突しないsentinel（Private Use Areaの1文字）へ
 // 一時退避し、removeZeroWidthSpaces適用後に元へ復元することで、挿入分
-// のみを除去対象にする。sentinelが入力に既に含まれる場合（極めて低頻度）
-// は区別できないため退避自体を行わず、既存挙動（全除去）にフォールバック
-// する。
-const ZERO_WIDTH_SPACE_SENTINEL = String.fromCharCode(0xe000);
+// のみを除去対象にする。単一固定文字だと、その文字自体が本文に既に
+// 含まれる場合に退避できず全除去にフォールバックしてしまうため、
+// 複数候補から入力に含まれない文字を動的に選ぶ。
+const ZERO_WIDTH_SPACE_SENTINEL_CANDIDATES = Array.from(
+  { length: 16 },
+  (_, index) => String.fromCharCode(0xe000 + index),
+);
 
 interface ZeroWidthSpaceEscapeResult {
   text: string;
-  didEscape: boolean;
+  sentinel: string | undefined;
 }
 
+function pickUnusedSentinel(markdown: string): string | undefined {
+  return ZERO_WIDTH_SPACE_SENTINEL_CANDIDATES.find(
+    (candidate) => !markdown.includes(candidate),
+  );
+}
+
+// 全候補が本文に既に含まれる場合（極めて低頻度）は区別できないため
+// 退避自体を行わず、既存挙動（全除去）にフォールバックする。
 function escapeExistingZeroWidthSpaces(
   markdown: string,
 ): ZeroWidthSpaceEscapeResult {
-  if (
-    !markdown.includes(ZERO_WIDTH_SPACE) ||
-    markdown.includes(ZERO_WIDTH_SPACE_SENTINEL)
-  )
-    return { text: markdown, didEscape: false };
+  if (!markdown.includes(ZERO_WIDTH_SPACE))
+    return { text: markdown, sentinel: undefined };
+  const sentinel = pickUnusedSentinel(markdown);
+  if (sentinel === undefined) return { text: markdown, sentinel: undefined };
   return {
-    text: markdown.replaceAll(ZERO_WIDTH_SPACE, ZERO_WIDTH_SPACE_SENTINEL),
-    didEscape: true,
+    text: markdown.replaceAll(ZERO_WIDTH_SPACE, sentinel),
+    sentinel,
   };
 }
 
 // escapeExistingZeroWidthSpacesが退避を行わなかった場合（U+200Bが元々
-// 無い、またはsentinelと衝突するため退避を諦めた場合）、本文中に元から
-// 含まれていたsentinel文字（U+E000）まで誤ってU+200Bへ書き換えてしまう
-// ため、退避を実際に行った場合のみ復元を実行する。
-function restoreEscapedZeroWidthSpaces(value: string): string {
-  return value.replaceAll(ZERO_WIDTH_SPACE_SENTINEL, ZERO_WIDTH_SPACE);
+// 無い、または全sentinel候補が本文と衝突するため退避を諦めた場合）、
+// 呼び出し元は`sentinel`がundefinedのままこの関数を呼ばない。本文中に
+// 元から含まれていたsentinel文字を誤ってU+200Bへ書き換えないため。
+function restoreEscapedZeroWidthSpaces(
+  value: string,
+  sentinel: string,
+): string {
+  return value.replaceAll(sentinel, ZERO_WIDTH_SPACE);
 }
 
 // リネーム後のタグ名が、削除・変換のいずれにも該当せずhtmlノードとして
@@ -693,12 +706,12 @@ const processor = unified()
 export async function transformEnhancedMarkdown(
   markdown: string,
 ): Promise<string> {
-  const { text: escaped, didEscape } = escapeExistingZeroWidthSpaces(markdown);
+  const { text: escaped, sentinel } = escapeExistingZeroWidthSpaces(markdown);
   const renamed = renameKnownUnderscoreTags(escaped);
   const normalized = insertZeroWidthSpaceForBoldFlanking(renamed);
   const result = String(await processor.process(normalized));
   const withoutInsertedZeroWidthSpaces = removeZeroWidthSpaces(result);
-  return didEscape
-    ? restoreEscapedZeroWidthSpaces(withoutInsertedZeroWidthSpaces)
+  return sentinel !== undefined
+    ? restoreEscapedZeroWidthSpaces(withoutInsertedZeroWidthSpaces, sentinel)
     : withoutInsertedZeroWidthSpaces;
 }
