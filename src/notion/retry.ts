@@ -1,3 +1,4 @@
+import { ClientErrorCode } from '@notionhq/client';
 import { InfraError } from '../errors.js';
 
 interface RetryOptions {
@@ -57,10 +58,20 @@ function classify(error: Failure): InfraError {
   });
 }
 
+// ClientErrorCode.RequestTimeoutは@notionhq/client（RequestTimeoutError）が
+// クライアント側タイムアウト時に返すコード。HTTPレスポンス自体が返っていない
+// ためerror.statusを持たず、既存のHTTPステータス判定では捕捉できない。
+const retryableCodes: Set<string> = new Set([
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ECONNABORTED',
+  ClientErrorCode.RequestTimeout,
+]);
+
 function retryable(error: Failure): boolean {
   return (
     (error.status !== undefined && retryableStatuses.has(error.status)) ||
-    ['ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED'].includes(error.code ?? '')
+    retryableCodes.has(error.code ?? '')
   );
 }
 

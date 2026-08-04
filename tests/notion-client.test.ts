@@ -46,6 +46,20 @@ describe('Notion request policy', () => {
     expect(operation).toHaveBeenCalledTimes(1);
   });
 
+  it('Notionクライアント側タイムアウト（notionhq_client_request_timeout）を再試行する', async () => {
+    const operation = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce({ code: 'notionhq_client_request_timeout' })
+      .mockResolvedValue('ok');
+    const execute = createRetriableExecutor({
+      sleep: () => Promise.resolve(),
+      random: () => 0,
+    });
+
+    await expect(execute(operation)).resolves.toBe('ok');
+    expect(operation).toHaveBeenCalledTimes(2);
+  });
+
   it('最大試行回数を超えて再試行しない', async () => {
     const operation = vi.fn().mockRejectedValue({ code: 'ECONNRESET' });
     const execute = createRetriableExecutor({
