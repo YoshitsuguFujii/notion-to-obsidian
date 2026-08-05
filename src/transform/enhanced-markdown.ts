@@ -1,6 +1,6 @@
 import type { PhrasingContent, Root, RootContent } from 'mdast';
 import type { Parent } from 'unist';
-import { unified, type Plugin } from 'unified';
+import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkStringify from 'remark-stringify';
@@ -9,7 +9,13 @@ import {
   unicodeWhitespace,
 } from 'micromark-util-character';
 import { buildMarkdownTableText } from './table-markdown.js';
-import { repairBrokenCodeFences } from './broken-code-fence.js';
+import {
+  collectCollapsedCodeRangesDeep,
+  repairBrokenCodeFences,
+  stripPositionsDeep,
+  validateProtectedRanges,
+  type ProtectedRange,
+} from './broken-code-fence.js';
 
 interface Range {
   start: number;
@@ -56,12 +62,26 @@ function isWithinRange(index: number, ranges: readonly Range[]): boolean {
 // 認識できる形にする。code/inlineCode内の同名文字列は書き換えない。
 const knownUnderscoreTagNames = ['synced_block', 'table_of_contents'] as const;
 
-function renameKnownUnderscoreTags(markdown: string): string {
+// `externalProtectedRanges`は、崩壊コードフェンスのcode本文として
+// pre-scan（collectCollapsedCodeRangesDeep）で事前確定した範囲。
+// code/inlineCodeノードとして未認識のため`collectUneditableRanges`の
+// 除外範囲に含まれないが、pre-parse正規化の対象外とする必要がある
+// （「code本文は元のNotion Markdownと完全一致する」という不変条件）。
+// この関数はアンダースコア→ハイフンの1文字対1文字置換のみで文字数を
+// 変えないため、呼び出し元は戻り値の文字列に対して同じoffsetの
+// 保護範囲をそのまま再利用できる。
+function renameKnownUnderscoreTags(
+  markdown: string,
+  externalProtectedRanges: readonly Range[],
+): string {
   if (!knownUnderscoreTagNames.some((name) => markdown.includes(name)))
     return markdown;
   let uneditableRanges: Range[];
   try {
-    uneditableRanges = collectUneditableRanges(markdown);
+    uneditableRanges = [
+      ...collectUneditableRanges(markdown),
+      ...externalProtectedRanges,
+    ];
   } catch {
     // 除外範囲を確定できない場合、code内を誤って書き換えるより
     // 安全側に倒してリネーム自体を行わない。
@@ -93,13 +113,51 @@ const ZERO_WIDTH_SPACE = '\u200B';
 // ズレによる誤検出を避ける。該当箇所の`**`直後にU+200B（ゼロ幅スペース）
 // を挿入し、直後の文字を句読点以外に見せることでleft-flankingを成立させる。
 // U+200Bはstringify後に除去する（removeZeroWidthSpaces）。
-function insertZeroWidthSpaceForBoldFlanking(markdown: string): string {
-  if (!markdown.includes('**')) return markdown;
+interface BoldFlankingResult {
+  text: string;
+  adjustedProtectedRanges: Range[];
+}
+
+// U+200B挿入は文字数を増やすため、挿入位置より後ろの保護範囲offsetは
+// ズレる。挿入位置リスト（元markdown基準、昇順）を使い、offset以下の
+// 挿入位置の個数だけシフトした新しいoffsetを計算する。
+function adjustOffsetForInsertions(
+  offset: number,
+  insertionPoints: readonly number[],
+): number {
+  let shift = 0;
+  for (const point of insertionPoints) {
+    if (point <= offset) shift += 1;
+    else break;
+  }
+  return offset + shift;
+}
+
+// `externalProtectedRanges`（pre-scanで確定した崩壊code本文の範囲、
+// renameKnownUnderscoreTags適用後も同じoffset）内の`**`はU+200B挿入
+// 対象から除外する。挿入によって後続offsetがズレるため、戻り値では
+// externalProtectedRangesをズレた分だけ調整した新しいoffsetで返す
+// （呼び出し元がこれをrepairBrokenCodeFencesの本修復判定に使う）。
+function insertZeroWidthSpaceForBoldFlanking(
+  markdown: string,
+  externalProtectedRanges: readonly Range[],
+): BoldFlankingResult {
+  if (!markdown.includes('**'))
+    return {
+      text: markdown,
+      adjustedProtectedRanges: [...externalProtectedRanges],
+    };
   let uneditableRanges: Range[];
   try {
-    uneditableRanges = collectUneditableRanges(markdown);
+    uneditableRanges = [
+      ...collectUneditableRanges(markdown),
+      ...externalProtectedRanges,
+    ];
   } catch {
-    return markdown;
+    return {
+      text: markdown,
+      adjustedProtectedRanges: [...externalProtectedRanges],
+    };
   }
   const insertionPoints: number[] = [];
   for (const match of markdown.matchAll(/\*\*/gu)) {
@@ -118,14 +176,37 @@ function insertZeroWidthSpaceForBoldFlanking(markdown: string): string {
       continue;
     insertionPoints.push(index + 2);
   }
-  if (insertionPoints.length === 0) return markdown;
+  if (insertionPoints.length === 0)
+    return {
+      text: markdown,
+      adjustedProtectedRanges: [...externalProtectedRanges],
+    };
+  // 防御的チェック: isWithinRangeによる除外が正しく機能していれば
+  // 到達しない想定だが、万一保護範囲の内部（半開区間[start, end)）へ
+  // 挿入しようとしていた場合は実装のバグとみなし、補正全体を中止して
+  // 未変更のmarkdownを返す（code本文を書き換えるより安全）。
+  const insertedIntoProtectedRange = insertionPoints.some((point) =>
+    externalProtectedRanges.some(
+      (range) => point >= range.start && point < range.end,
+    ),
+  );
+  if (insertedIntoProtectedRange)
+    return {
+      text: markdown,
+      adjustedProtectedRanges: [...externalProtectedRanges],
+    };
   let result = '';
   let cursor = 0;
   for (const point of insertionPoints) {
     result += markdown.slice(cursor, point) + ZERO_WIDTH_SPACE;
     cursor = point;
   }
-  return result + markdown.slice(cursor);
+  const text = result + markdown.slice(cursor);
+  const adjustedProtectedRanges = externalProtectedRanges.map((range) => ({
+    start: adjustOffsetForInsertions(range.start, insertionPoints),
+    end: adjustOffsetForInsertions(range.end, insertionPoints),
+  }));
+  return { text, adjustedProtectedRanges };
 }
 
 function removeZeroWidthSpaces(value: string): string {
@@ -608,12 +689,129 @@ function expandSpans(children: RootContent[]): RootContent[] {
   return result;
 }
 
-function transformParent(parent: Parent, sourceText: string): void {
+// paragraph内でinline HTMLとして存在する<callout>開始タグが、本文中の
+// 空行によりCommonMarkのHTMLブロック規則で閉じタグ</callout>と別ノードに
+// 分裂した場合を検出する。paragraph内の開始タグ以降の子ノードがすべて
+// text型であることを要求する（他の型が混ざる場合は安全側で対象外とし、
+// 呼び出し側で元のまま出力する）。
+function unclosedCalloutOpenParagraph(node: RootContent):
+  | {
+      openingTag: string;
+      before: PhrasingContent[];
+      bodyPrefix: string;
+    }
+  | undefined {
+  if (node.type !== 'paragraph') return undefined;
+  const children = node.children;
+  const openIndex = children.findIndex(
+    (child) =>
+      child.type === 'html' &&
+      child.value.trim().toLowerCase().startsWith('<callout'),
+  );
+  if (openIndex === -1) return undefined;
+  const openNode = children[openIndex]!;
+  if (openNode.type !== 'html') return undefined;
+  const rest = children.slice(openIndex);
+  if (
+    rest.some(
+      (child) =>
+        child.type === 'html' &&
+        child.value.toLowerCase().includes('</callout>'),
+    )
+  )
+    return undefined;
+  const after = children.slice(openIndex + 1);
+  if (!after.every((child) => child.type === 'text')) return undefined;
+  const openingTag = openNode.value.trim();
+  const bodyPrefix = after
+    .map((child) => (child.type === 'text' ? child.value : ''))
+    .join('');
+  return { openingTag, before: children.slice(0, openIndex), bodyPrefix };
+}
+
+// html型ノードのvalueに含まれる</callout>で分割する。含まない場合は
+// undefinedを返す（このノードは終了ノードの候補ではない）。
+function splitAtCalloutClose(
+  value: string,
+): { before: string; after: string } | undefined {
+  const closeTag = '</callout>';
+  const index = value.toLowerCase().indexOf(closeTag);
+  if (index === -1) return undefined;
+  return {
+    before: value.slice(0, index),
+    after: value.slice(index + closeTag.length),
+  };
+}
+
+const calloutFragmentProcessor = unified().use(remarkParse).use(remarkGfm);
+
+// 開始タグと終了タグが空行を挟んで別ノードに分裂したcalloutを結合する。
+// 開始paragraphの直後の兄弟ノードのみを終了候補として扱う（間に他の
+// ノードが挟まる場合、または直後のノードがhtml型でない場合は対象外とし
+// 変換しない安全側判定）。終了ノードが後続本文を巻き込んでいる場合
+// （CommonMarkのHTMLブロックが次の空行まで後続行を巻き込む挙動）、その
+// 本文を生Markdown文字列として再parseし、結合したcalloutの直後へ復元する。
+function joinSplitCallouts(children: RootContent[]): RootContent[] {
+  const result: RootContent[] = [];
+  let index = 0;
+  while (index < children.length) {
+    const node = children[index]!;
+    const openInfo = unclosedCalloutOpenParagraph(node);
+    const nextNode = children[index + 1];
+    if (openInfo === undefined || nextNode?.type !== 'html') {
+      result.push(node);
+      index += 1;
+      continue;
+    }
+    const closeInfo = splitAtCalloutClose(nextNode.value);
+    if (closeInfo === undefined) {
+      result.push(node);
+      index += 1;
+      continue;
+    }
+    const { before } = openInfo;
+    if (before.length > 0) {
+      const lastBefore = before[before.length - 1]!;
+      if (lastBefore.type === 'text')
+        lastBefore.value = lastBefore.value.replace(/\r?\n$/u, '');
+      result.push({ type: 'paragraph', children: before });
+    }
+    const combined = `${openInfo.openingTag}${openInfo.bodyPrefix}${closeInfo.before}\n</callout>`;
+    result.push({ type: 'html', value: combined });
+    const trailing = closeInfo.after.replace(/^\r?\n/u, '');
+    if (trailing.length > 0) {
+      try {
+        const fragment = calloutFragmentProcessor.parse(trailing);
+        for (const fragmentChild of fragment.children)
+          stripPositionsDeep(fragmentChild);
+        result.push(...fragment.children);
+      } catch {
+        // remark-parseは通常どのような文字列に対しても例外を投げないため
+        // 実行時には到達しない想定だが、中途半端に結合するより安全側に
+        // 倒し、このcalloutは結合せず元のノードを維持するフォールバック
+        // として残す（repairBrokenCodeFencesの同型パターンを踏襲）。
+        result.push(node, nextNode);
+        index += 2;
+        continue;
+      }
+    }
+    index += 2;
+  }
+  return result;
+}
+
+function transformParent(
+  parent: Parent,
+  sourceText: string,
+  protectedRanges: readonly ProtectedRange[],
+): void {
   parent.children = expandSpans(parent.children as RootContent[]);
   parent.children = repairBrokenCodeFences(
     parent.children as RootContent[],
     sourceText,
+    protectedRanges,
   );
+  parent.children = joinSplitCallouts(parent.children as RootContent[]);
   const transformed: RootContent[] = [];
   for (const child of parent.children as RootContent[]) {
     const inline = inlineCallout(child);
@@ -668,8 +866,11 @@ function transformParent(parent: Parent, sourceText: string): void {
         // 中身にcallout等の既存Enhanced Markdown構文が入っていてもそのまま
         // 維持し後段の既存変換が適用されるよう、再帰的に変換する。
         // fragmentはsyncedBlock文字列を独立に再parseしたものなので、
-        // 位置オフセットの基準もsyncedBlock自身になる。
-        transformParent(fragment, syncedBlock);
+        // 位置オフセットの基準もsyncedBlock自身になる。pre-scanは元文書
+        // 全体に対してのみ行っており、syncedBlock文字列自体のoffset基準
+        // には対応しないため、空配列を渡す（内部で崩壊コードフェンスが
+        // 検出されてもfail-closedとなる。既知の制約）。
+        transformParent(fragment, syncedBlock, []);
         for (const node of fragment.children) restoreUnderscoreTagsDeep(node);
         transformed.push(...fragment.children);
         continue;
@@ -681,36 +882,72 @@ function transformParent(parent: Parent, sourceText: string): void {
       continue;
     }
     if ('children' in child && Array.isArray(child.children)) {
-      transformParent(child, sourceText);
+      transformParent(child, sourceText, protectedRanges);
     }
     transformed.push(child);
   }
   parent.children = transformed;
 }
 
-const notionEnhancedElements: Plugin<[], Root> = () => (tree, file) => {
-  transformParent(tree, String(file));
-};
-
-const processor = unified()
-  .use(remarkParse)
-  .use(remarkGfm)
-  .use(notionEnhancedElements)
-  .use(remarkStringify, {
-    bullet: '-',
-    fences: true,
-    listItemIndent: 'one',
-    rule: '-',
-  });
+// processorはprotectedRangesを呼び出しごとに変えて注入する必要があるため、
+// グローバルな単一インスタンスではなくtransformEnhancedMarkdown呼び出し
+// ごとに構築する。remark pluginは`.use(plugin, options)`の形で静的な
+// optionsしか受け取れないため、クロージャでprotectedRangesを渡す。
+function buildProcessor(protectedRanges: readonly ProtectedRange[]) {
+  return unified()
+    .use(remarkParse)
+    .use(remarkGfm)
+    .use(() => (tree: Root, file: { toString(): string }) => {
+      transformParent(tree, String(file), protectedRanges);
+    })
+    .use(remarkStringify, {
+      bullet: '-',
+      fences: true,
+      listItemIndent: 'one',
+      rule: '-',
+    });
+}
 
 export async function transformEnhancedMarkdown(
   markdown: string,
 ): Promise<string> {
   const { text: escaped, sentinel } = escapeExistingZeroWidthSpaces(markdown);
-  const renamed = renameKnownUnderscoreTags(escaped);
-  const normalized = insertZeroWidthSpaceForBoldFlanking(renamed);
+  // 全sentinel候補（U+E000〜U+E00F）が本文と衝突し、既存のU+200Bを
+  // 退避できなかった場合（極めて低頻度）、著者記述のU+200Bと太字
+  // flanking補正で挿入するU+200Bを区別できない。太字補正の挿入・
+  // stringify後の除去の両方をスキップし、著者記述のU+200Bを完全に
+  // 保持する（安全不変条件8「黙って情報を捨てない」を優先し、太字
+  // 補正を諦める方を選ぶ。以前は全除去にフォールバックしていたが、
+  // これは著者記述のU+200Bまで削除してしまうため不採用に変更した）。
+  const hasUnprotectableZeroWidthSpace =
+    sentinel === undefined && markdown.includes(ZERO_WIDTH_SPACE);
+  // pre-parse正規化（rename/U+200B挿入）は、code/inlineCodeノードとして
+  // 未認識の崩壊コードフェンスのcode本文を書き換えてしまいうる。正規化
+  // より前のescaped markdownに対してpre-scanを行い、崩壊code本文の範囲を
+  // 事前確定し、正規化の除外範囲へ加える（「code本文は元のNotion
+  // Markdownと完全一致する」という不変条件を維持するため）。整合性が
+  // 崩れているrangeが1件でもあればpre-scan全体をfail-closedとする。
+  const initialProtectedRanges = validateProtectedRanges(
+    collectCollapsedCodeRangesDeep(parseOnlyProcessor.parse(escaped), escaped),
+    escaped.length,
+  );
+  const renamed = renameKnownUnderscoreTags(escaped, initialProtectedRanges);
+  const { text: normalized, adjustedProtectedRanges: rawAdjustedRanges } =
+    hasUnprotectableZeroWidthSpace
+      ? {
+          text: renamed,
+          adjustedProtectedRanges: initialProtectedRanges,
+        }
+      : insertZeroWidthSpaceForBoldFlanking(renamed, initialProtectedRanges);
+  const adjustedProtectedRanges = validateProtectedRanges(
+    rawAdjustedRanges,
+    normalized.length,
+  );
+  const processor = buildProcessor(adjustedProtectedRanges);
   const result = String(await processor.process(normalized));
-  const withoutInsertedZeroWidthSpaces = removeZeroWidthSpaces(result);
+  const withoutInsertedZeroWidthSpaces = hasUnprotectableZeroWidthSpace
+    ? result
+    : removeZeroWidthSpaces(result);
   return sentinel !== undefined
     ? restoreEscapedZeroWidthSpaces(withoutInsertedZeroWidthSpaces, sentinel)
     : withoutInsertedZeroWidthSpaces;

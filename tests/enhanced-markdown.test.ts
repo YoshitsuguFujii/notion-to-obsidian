@@ -580,4 +580,206 @@ describe('transformEnhancedMarkdown', () => {
       `before${zwsp}middle${defaultSentinel}after\n`,
     );
   });
+
+  it('タブでインデントされた開始フェンス行を持つ崩壊コードフェンスが正しく復元される', async () => {
+    const input = '1. text\n\t```js\nconsole.log(1);\n```\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   ```js\n   console.log(1);\n   ```\n',
+    );
+  });
+
+  it('タブとスペースが混在するインデントの開始フェンス行でも崩壊コードフェンスが復元される', async () => {
+    const input = '1. text\n \t```js\nconsole.log(1);\n```\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   ```js\n   console.log(1);\n   ```\n',
+    );
+  });
+
+  it('終了候補行がタブ1つ（4スペース相当）でインデントされている場合、実効幅が0〜3を超えるため終了候補として誤って許容されない', async () => {
+    const input = '1. text\n   ```js\nline1\n\n\t```\n';
+    const output = await transformEnhancedMarkdown(input);
+    // 終了候補が誤って許容されると崩壊シグネチャとして修復されてしまうが、
+    // タブ1つ=実効幅4はmaxIndent:3を超えるため終了候補として扱われず、
+    // 安全側フォールバック（未修復のまま）になる。テキスト内容自体は
+    // 失われない。
+    expect(output).toContain('line1');
+    expect(output).toBe(
+      '1. text\n   ```js\n   ```\n\nline1\n\n````\n```\n````\n',
+    );
+  });
+
+  it('空行を挟んで開始タグ・終了タグが別ノードに分裂した callout が正しく変換される', async () => {
+    const input =
+      '例)text\n<callout icon="💡" color="gray_bg">\nbody line1\nbody line2\n\n</callout>\n次の段落\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '例)text\n\n> [!note]\n> body line1\n> body line2\n\n次の段落\n',
+    );
+  });
+
+  it('分裂したcalloutの終了ノードが後続本文を巻き込む場合、その本文が失われず独立したブロックとして復元される', async () => {
+    const input =
+      '例)text\n<callout icon="💡" color="gray_bg">\nbody\n\n</callout>\nDuckもインターフェイスにすべき？\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '例)text\n\n> [!note]\n> body\n\nDuckもインターフェイスにすべき？\n',
+    );
+  });
+
+  it('開始callout段落にtext以外の型が混ざる場合は結合せず元のHTMLノードのまま出力する', async () => {
+    const input = '例)text\n<callout icon="💡">\n**bold**\n\n</callout>\n次\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('<callout');
+    expect(output).toContain('</callout>');
+  });
+
+  it('分裂したcalloutが巻き込んだ後続本文にさらにネストした崩壊コードフェンスがあっても、誤ったoffsetでsourceTextをスライスせず安全側フォールバックする', async () => {
+    const input =
+      '例)text\n<callout icon="💡">\nbody\n\n</callout>\n1. more\n\t```js\nconsole.log(1);\n```\n';
+    const output = await transformEnhancedMarkdown(input);
+    // trailing fragment内のネストした崩壊コードフェンスは、位置情報が
+    // trailing文字列基準のまま元のsourceTextに対して誤ってスライスされる
+    // ことがない（stripPositionsDeepでposition削除→offset未定義→安全側
+    // フォールバック）。誤った内容に化けず、著者が書いた内容が失われない
+    // ことを確認する。
+    expect(output).toContain('console.log(1);');
+    expect(output).toContain('> [!note]');
+    expect(output).toContain('> body');
+  });
+
+  it('開始calloutの直後の兄弟がhtml型でない場合は結合せず元のHTMLノードのまま出力する', async () => {
+    const input =
+      '例)text\n<callout icon="💡">\nbody\n\nnot html node\n\n</callout>\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('<callout');
+  });
+
+  it('タブ開始・終了インデント、plain textのinfo string、終了フェンスがparagraph途中に吸収、直後に空行なしの本文、続いて見出しという実データ相当のケースが正しく修復される', async () => {
+    const input =
+      '1. text\n\t1. nested\n2. more\n\t```plain text\npublic abstract class Duck{\n  // **not bold** `inline code` <b>html</b>\n}\n\t```\nafter fence with **bold** and `code` and [link](http://example.com).\n## Next heading\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   1. nested\n2. more\n   ```plain text\n   public abstract class Duck{\n     // **not bold** `inline code` <b>html</b>\n   }\n   ```\n\nafter fence with **bold** and `code` and [link](http://example.com).\n\n## Next heading\n',
+    );
+  });
+
+  it('終了候補がparagraph最終行にある従来ケース（後続本文なし）も引き続き成功する', async () => {
+    const input =
+      '1. text\n\t1. nested\n2. more\n\t```plain text\npublic abstract class Duck{\n}\n\t```\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   1. nested\n2. more\n   ```plain text\n   public abstract class Duck{\n   }\n   ```\n',
+    );
+  });
+
+  it('marker長不足（終了側のマーカー長が開始側未満）は修復しない', async () => {
+    const input = '1. text\n\t````plain text\nline1\n\t```\nafter\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   ```plain text\n   ```\n\nline1\n\\`\\`\\`\nafter\n',
+    );
+  });
+
+  it('indentation prefix不一致（開始タブ・終了スペース+タブ）は修復しない', async () => {
+    const input = '1. text\n\t```plain text\nline1\n \t```\nafter\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   ```plain text\n   ```\n\nline1\n\\`\\`\\`\nafter\n',
+    );
+  });
+
+  it('paragraph内に終了フェンス候補が複数見つかる場合はどれが本当の終端か判別できず修復しない', async () => {
+    const input = '1. text\n\t```plain text\nline1\n\t```\nmid\n\t```\nafter\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   ```plain text\n   ```\n\nline1\n`\nmid\n\t`\nafter\n',
+    );
+  });
+
+  it('marker行に後方本文が同一行で混在する場合（行全体がフェンスのみでない）は修復しない', async () => {
+    const input =
+      '1. text\n\t```plain text\nline1\n\t``` trailing text\nafter\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '1. text\n   ```plain text\n   ```\n\nline1\n\\`\\`\\` trailing text\nafter\n',
+    );
+  });
+
+  it('崩壊開始シグネチャ（ordered listの末尾がlang付き空code）がない通常paragraphは変更しない', async () => {
+    const input = '普通の段落。\n\t```\nこれは崩壊開始ではない。\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '普通の段落。\n\\`\\`\\`\nこれは崩壊開始ではない。\n',
+    );
+  });
+
+  it('CRLFの崩壊コードフェンスでも本文・後続本文を失わない', async () => {
+    const input =
+      '1. text\r\n\t```plain text\r\npublic class X{\r\n  int a;\r\n}\r\n\t```\r\nafter fence text.\r\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('public class X{');
+    expect(output).toContain('int a;');
+    expect(output).toContain('after fence text.');
+  });
+
+  it('崩壊code本文内の既知underscoreタグ（synced_block/table_of_contents）はpre-parse正規化でリネームされない', async () => {
+    const input =
+      '1. text\n\t```plain text\n<synced_block>\n<table_of_contents/>\n\t```\nafter\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('<synced_block>');
+    expect(output).toContain('<table_of_contents/>');
+    expect(output).not.toContain('<synced-block>');
+    expect(output).not.toContain('<table-of-contents/>');
+  });
+
+  it('崩壊code本文内に元からハイフン表記の文字列があっても逆変換されずそのまま保持される', async () => {
+    const input =
+      '1. text\n\t```plain text\nline before\n<synced-block>\n<table-of-contents/>\n\t```\nafter\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('<synced-block>');
+    expect(output).toContain('<table-of-contents/>');
+  });
+
+  it('崩壊code本文内の太字flanking補正対象文字列がU+200B挿入されず元入力の文字列のまま保持される', async () => {
+    const input =
+      '1. text\n\t```plain text\n限り**、実行時に変更する**こと\n\t```\nafter\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('限り**、実行時に変更する**こと');
+  });
+
+  it('崩壊codeより前の通常本文にflanking補正がありoffsetがずれても崩壊code本文の境界が正しく特定される', async () => {
+    const input =
+      '限り**、直前の補正**あり\n\n1. text\n\t```plain text\npublic class X{}\n\t```\nafter\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('public class X{}');
+  });
+
+  it('崩壊codeより前に複数の太字flanking補正挿入箇所があっても累積offsetのずれを正しく吸収する', async () => {
+    const input =
+      '限り**、1つ目**あり 限り**、2つ目**あり\n\n1. a\n\t```plain text\npublic class A{}\n\t```\nmid\n\n1. b\n\t```plain text\npublic class B{}\n\t```\nafter\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('public class A{}');
+    expect(output).toContain('public class B{}');
+  });
+
+  it('同一文書に複数の崩壊code rangeがあっても両方とも正しく修復される', async () => {
+    const input =
+      '1. text\n\t```plain text\npublic class A{}\n\t```\nmiddle\n\n1. text2\n\t```plain text\npublic class B{}\n\t```\nafter\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('public class A{}');
+    expect(output).toContain('public class B{}');
+    expect(output).toContain('middle');
+    expect(output).toContain('after');
+  });
+
+  it('U+200BとU+E000〜U+E00Fの全16sentinel候補を同時に含む場合、全候補衝突によりsentinel退避を諦めても著者記述のU+200Bと全候補文字が失われず保持される', async () => {
+    const zwsp = String.fromCharCode(0x200b);
+    const allSentinels = Array.from({ length: 16 }, (_, i) =>
+      String.fromCharCode(0xe000 + i),
+    ).join('');
+    const input = `before${zwsp}${allSentinels}after`;
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      `before${zwsp}${allSentinels}after\n`,
+    );
+  });
+
+  it('synced_block内に崩壊コードフェンスがあっても、fragment化された別sourceText基準のため修復されないが文字列は失われず、code内容がstrong等として誤って再解釈されない', async () => {
+    const input =
+      '<synced_block url="x">\n1. text\n\t```plain text\npublic class X{ **not real bold** }\n\t```\nafter\n</synced_block>\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('public class X{');
+    expect(output).toContain('**not real bold**');
+    expect(output).toContain('after');
+  });
 });

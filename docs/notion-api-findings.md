@@ -67,6 +67,14 @@
 
 あわせて、U+200B退避のsentinelを単一固定文字から複数候補の動的選択に変更し、sentinel自体が本文と衝突するリスクを低減した。
 
+### 欠陥4の第2実測シグネチャ（実Vault実測・2026-08-05）
+
+実`sync --full`後にObsidianで実Vaultを目視確認したところ、上記の対応（実測日2026-08-02〜08-04）だけでは解消しない表示崩れが1件確認された。原因調査の結果、欠陥4には既知の「孤立codeノード型」（開始行のみインデント、本文行・閉じフェンス跡はインデントしない）とは別に、もう1つの実測シグネチャが存在することが判明した。
+
+- **第2シグネチャ（paragraph吸収型）**: Notion Markdown APIは、番号付きリスト内のコードフェンスにおいて開始行だけでなく**閉じフェンス行もタブでインデントして出力する**ことがある。CommonMarkはタブを次のタブストップ（4の倍数列）まで展開するため、この閉じフェンス行は実効的に4スペース以上のインデントとなる。直前の本文行との間に空行がないため、CommonMarkのlazy continuationにより閉じフェンス行は独立したcodeノードにならず、直前のparagraphへ生文字列としてただ吸収される。さらに、閉じフェンス行の直後（空行なし）に別の本文行が続く場合、その本文行も同じparagraphへ吸収され、閉じフェンス行がparagraphの「途中」に位置することもある（実データで確認: 閉じフェンス行の直後に段落テキストが1行続き、その次に見出しが続くパターン）。この場合、第1シグネチャの検出ロジック（`isCollapsedFenceTerminator`、孤立codeノードを終了候補とする経路）が前提とする「孤立した終了候補ノード」自体がASTに存在しないため、既存の検出では捕捉できない。
+- 対応として、崩壊開始の直後に連続する各paragraphの`position`範囲（生Markdown文字列のoffset範囲のみ。paragraphのinline構造・children配列は一切参照しない）を物理行単位でraw文字列として走査し、開始フェンスとraw indentation（タブ・スペースを区別、実効幅換算しない）が完全一致する閉じフェンス行を探す独立した経路（`src/transform/broken-code-fence.ts`の`tryRepairAbsorbedParagraphSignature`）を追加した。探索範囲全体を通して候補が複数見つかった場合はどれが本当の終端か判別できないためfail-closedとする。
+- **pre-parse正規化との相互作用（重要な設計制約）**: 崩壊コードフェンスのcode本文は、初回parse時点ではcodeノードとして認識されないため、既存の`renameKnownUnderscoreTags`/`insertZeroWidthSpaceForBoldFlanking`が使う除外範囲（`collectUneditableRanges`、code/inlineCodeノードのみ対象）に含まれない。対応せず放置すると、pre-parse正規化がcode本文を書き換えてしまい（例: `<synced_block>`→`<synced-block>`への誤リネーム、`**`直後への意図しないU+200B挿入）、「code本文は元のNotion Markdownと完全一致する」という安全不変条件に違反する。pre-parse正規化より前の時点で、同じ崩壊シグネチャ判定ロジックをASTを書き換えずに範囲収集のみ行う形で先に実行し（`collectCollapsedCodeRangesDeep`）、崩壊code本文の範囲を事前確定してpre-parse正規化の除外範囲に追加する設計とした。詳細設計は`docs/adr/008-pre-parse-normalization-for-enhanced-markdown.md`を参照。
+
 ## Block API（フォールバック・補助）
 
 - Markdown API だけで済ませられると仮定しない。以下で Block API を補助的に使う:

@@ -104,7 +104,10 @@ const TOOL_VERSION = '0.1.0';
 // 変更して防止。あわせてU+200B退避のsentinelを単一固定文字から複数候補の
 // 動的選択に変更し、sentinel文字自体が本文に既存する場合の衝突リスクを
 // 低減した。これらのパターンを含むページの生成物が変わる。
-const TRANSFORM_VERSION = '11';
+// Phase 8（'11'→'12'）: 崩壊コードフェンス検出のタブインデント対応、
+// 空行を挟んで分裂したcalloutブロックの結合対応。これらのパターンを
+// 含むページの生成物が変わる。
+const TRANSFORM_VERSION = '12';
 function signedUrlSafetyMessage(notionIds: ReadonlySet<string>): string {
   return `Cannot safely process retained Notion signed asset URLs on page ID(s): ${[...notionIds].sort().join(', ')}. One or more URLs could not be parsed, or their extent could not be determined from the surrounding syntax. A URL is only safe to process inside a Markdown link or image destination, an autolink such as <URL>, or a quoted HTML attribute; a bare URL is not, even when it is the whole value. In Notion, put the URL into one of those forms, then run sync --dry-run to verify the correction before syncing. Inside a code block, inline code, a page title, or a database property, none of those forms are available; remove the signed URL from that value or exclude the page from the sync instead.`;
 }
