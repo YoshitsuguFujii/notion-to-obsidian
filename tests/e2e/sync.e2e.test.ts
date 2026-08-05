@@ -1029,7 +1029,7 @@ describe('sync E2E', () => {
     const repaired = await readFile(path, 'utf8');
     expect(repaired).not.toContain('X-Amz-Signature');
     expect(repaired).not.toContain('#preview');
-    expect(app.store.getLatestRun()?.transformVersion).toBe('12');
+    expect(app.store.getLatestRun()?.transformVersion).toBe('18');
     const fixedTime = new Date('2020-02-03T04:05:06.000Z');
     await utimes(path, fixedTime, fixedTime);
 
@@ -1909,7 +1909,7 @@ describe('初回運用フロー E2E', () => {
     expect(app.store.getLatestRun()).toBeUndefined();
 
     await app.sync();
-    expect(app.store.getLatestRun()?.transformVersion).toBe('12');
+    expect(app.store.getLatestRun()?.transformVersion).toBe('18');
     const path = join(app.managedRoot, 'Notes.md');
     const content = await readFile(path, 'utf8');
     const mtime = (await stat(path)).mtimeMs;

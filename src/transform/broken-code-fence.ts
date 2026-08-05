@@ -75,9 +75,11 @@ function indentWidth(indent: string): number {
 // 4スペースインデントによる「本物の」インデントコードブロックであり、
 // その1行目がたまたまfence marker風の文字列で始まっていても、崩壊
 // シグネチャの終了候補として誤認識してはならない。戻り値の`indent`は
-// raw文字列のまま（タブ・スペースを区別）保持し、paragraph吸収型
-// シグネチャ（findAbsorbedFenceEnd）の開始・終了行indentation完全一致
-// 判定に使う。
+// raw文字列のまま（タブ・スペースを区別）保持する。paragraph吸収型
+// シグネチャ（findFenceLineCandidatesInParagraph）の開始・終了行
+// indentation判定は、raw文字列の完全一致ではなく`indentWidth`による
+// 実効幅の一致で行う（Phase 9。Notion実データで開始・終了フェンス行の
+// タブ・スペース構成が異なるが実効幅は一致するケースが確認されたため）。
 function fenceMarkerAtLineOf(
   sourceText: string,
   offset: number,
@@ -241,7 +243,7 @@ interface FenceLineCandidate {
 }
 
 // 単一paragraphのposition範囲内を物理行単位で走査し、終了フェンス行の
-// 条件（indentation raw完全一致・marker文字種一致・marker長以上・
+// 条件（indentation実効幅一致・marker文字種一致・marker長以上・
 // info stringなし・行全体がindentation+marker+後方空白のみ）を満たす
 // 行をすべて収集する（一意性判定は呼び出し元の責務）。
 function findFenceLineCandidatesInParagraph(
@@ -275,7 +277,7 @@ function findFenceLineCandidatesInParagraph(
       const infoString = match[3]!.trim();
       if (
         infoString.length === 0 &&
-        indent === openMarker.indent &&
+        indentWidth(indent) === indentWidth(openMarker.indent) &&
         marker[0] === openMarker.char &&
         marker.length >= openMarker.length
       ) {
@@ -445,10 +447,19 @@ export function validateProtectedRanges(
 // 本文がrename/U+200B挿入の対象にならないようにする。
 //
 // root.children（トップレベル）のみを対象にする。listItem内のネスト、
-// synced_block/callout展開後のfragment内で崩壊コードフェンスが発生する
-// ケースは実データで未確認のため、対象外とする（本修復側で、対応する
-// 保護範囲が見つからない場合はfail-closedとして修復しない設計のため、
-// 安全側に倒れる。過検出にはならない）。
+// calloutMarkdown/columnsMarkdownが生成するfragment内（既存の非再帰的
+// 変換という別の既知の制約。Phase 2/3参照）で崩壊コードフェンスが発生
+// するケースは実データで未確認のため、対象外とする（本修復側で、対応
+// する保護範囲が見つからない場合はfail-closedとして修復しない設計の
+// ため、安全側に倒れる。過検出にはならない）。
+//
+// 一方、空行を挟んで分裂したcallout（Phase 8 AC-11、enhanced-markdown.ts
+// のjoinSplitCallouts）のtrailing部分は、この関数の主要ループ内で
+// callout分裂パターンを検出し、後述のcollectCollapsedCodeCalloutTrailingRanges
+// 相当の処理で対象に含める（Phase 10）。joinSplitCallouts自体が同種の
+// 開始・終了ペア検出ロジックを持つが、broken-code-fence.tsは
+// enhanced-markdown.tsに依存しない設計（依存方向を一方向に保つ）ため、
+// 判定ロジックをここに複製する。
 //
 // 経路1（孤立codeノード型）の保護範囲は「開始フェンス行の先頭」〜
 // 「終了ノードのフェンス跡の開始位置」まで（trailing巻き込み部分は
@@ -487,6 +498,85 @@ function collectNestedRangesFromTrailing(
   }
 }
 
+// paragraphが「未閉じcallout開始」（開始<callout ...>タグをinline HTML
+// ノードとして含み、そのparagraph内に対応する</callout>を含まない）かを
+// 判定する。enhanced-markdown.tsのunclosedCalloutOpenParagraphと同型の
+// 判定（依存方向を保つための複製、上のコメント参照）。pre-scanでは
+// openingTag/bodyPrefixの取り出しは不要なため、判定結果のみ返す。
+function isUnclosedCalloutOpenParagraph(node: RootContent): boolean {
+  if (node.type !== 'paragraph') return false;
+  const children = node.children;
+  const openIndex = children.findIndex(
+    (child) =>
+      child.type === 'html' &&
+      child.value.trim().toLowerCase().startsWith('<callout'),
+  );
+  if (openIndex === -1) return false;
+  const rest = children.slice(openIndex);
+  return !rest.some(
+    (child) =>
+      child.type === 'html' && child.value.toLowerCase().includes('</callout>'),
+  );
+}
+
+export interface CalloutCloseTrailingRange {
+  trailingStart: number;
+  trailingEnd: number;
+  // `</callout>`タグ自体の終端offset（trailingStartは後続の改行スキップ
+  // 後のoffsetのため、タグ直後の生位置が別途必要な呼び出し元向け。
+  // Phase 11のリスト境界をまたぐcallout結合で使用する。
+  closeTagEnd: number;
+}
+
+// callout終了ノード（html型、value中に</callout>を含む）の生Markdown
+// 文字列上での位置から、`</callout>`直後（改行を1つスキップした後）から
+// ノード終端までのoffset範囲を計算する。node.valueの文字列操作ではなく
+// sourceTextのoffsetベースで計算する（他のtrailing抽出関数と同じ設計
+// 方針。remarkのparse正規化でvalueがsourceTextと厳密に一致しない場合が
+// あっても、offsetベースなら安全）。`</callout>`を含まない、または
+// position情報が欠落している場合はundefinedを返す。
+export function findCalloutCloseTrailingRange(
+  sourceText: string,
+  closeNode: RootContent,
+): CalloutCloseTrailingRange | undefined {
+  if (closeNode.type !== 'html') return undefined;
+  const start = offsetOf(closeNode, 'start');
+  const end = offsetOf(closeNode, 'end');
+  if (start === undefined || end === undefined) return undefined;
+  const raw = sourceText.slice(start, end);
+  const closeTag = '</callout>';
+  const closeIndex = raw.toLowerCase().indexOf(closeTag);
+  if (closeIndex === -1) return undefined;
+  const closeTagEnd = start + closeIndex + closeTag.length;
+  let trailingStart = closeTagEnd;
+  if (sourceText[trailingStart] === '\r') trailingStart += 1;
+  if (sourceText[trailingStart] === '\n') trailingStart += 1;
+  return { trailingStart, trailingEnd: end, closeTagEnd };
+}
+
+// リスト境界をまたぐcallout分裂（Phase 11）: 開始<callout>タグが、
+// リストの最後のlistItemの最後の子としてブロックレベルのhtmlノードで
+// 存在し、そのノード自身の中に対応する</callout>を含まない場合を検出
+// する。「最後のlistItemの最後の子」限定はfindTrailingBrokenCodeStart
+// と同じ設計判断（CommonMarkのHTML block吸収がコンテナ境界で打ち切ら
+// れる位置は、リスト全体の最後のlistItemの末尾に限られるため）。
+// 番号付き・番号なしどちらのリストにも起こりうるため、orderedの制限は
+// 設けない（Phase 5の崩壊コードフェンス検出とは異なる制約）。
+export function findNestedUnclosedCalloutOpenHtml(
+  list: List,
+): RootContent | undefined {
+  const lastItem = list.children.at(-1);
+  const lastChild = lastItem?.children.at(-1);
+  if (
+    lastChild === undefined ||
+    lastChild.type !== 'html' ||
+    !lastChild.value.trim().toLowerCase().startsWith('<callout') ||
+    lastChild.value.toLowerCase().includes('</callout>')
+  )
+    return undefined;
+  return lastChild;
+}
+
 export function collectCollapsedCodeRanges(
   children: readonly RootContent[],
   sourceText: string,
@@ -495,9 +585,48 @@ export function collectCollapsedCodeRanges(
   let index = 0;
   while (index < children.length) {
     const node = children[index]!;
+    if (isUnclosedCalloutOpenParagraph(node)) {
+      const nextNode = children[index + 1];
+      const trailingRange =
+        nextNode === undefined
+          ? undefined
+          : findCalloutCloseTrailingRange(sourceText, nextNode);
+      if (trailingRange !== undefined) {
+        const { trailingStart, trailingEnd } = trailingRange;
+        if (trailingEnd > trailingStart) {
+          const trailing = sourceText.slice(trailingStart, trailingEnd);
+          ranges.push(
+            ...collectNestedRangesFromTrailing(trailing, trailingStart),
+          );
+        }
+        index += 2;
+        continue;
+      }
+      index += 1;
+      continue;
+    }
     if (node.type !== 'list') {
       index += 1;
       continue;
+    }
+    const nestedCalloutOpen = findNestedUnclosedCalloutOpenHtml(node);
+    if (nestedCalloutOpen !== undefined) {
+      const nextSibling = children[index + 1];
+      const trailingRange =
+        nextSibling === undefined
+          ? undefined
+          : findCalloutCloseTrailingRange(sourceText, nextSibling);
+      if (trailingRange !== undefined) {
+        const { trailingStart, trailingEnd } = trailingRange;
+        if (trailingEnd > trailingStart) {
+          const trailing = sourceText.slice(trailingStart, trailingEnd);
+          ranges.push(
+            ...collectNestedRangesFromTrailing(trailing, trailingStart),
+          );
+        }
+        index += 2;
+        continue;
+      }
     }
     const startNode = findTrailingBrokenCodeStart(node, sourceText);
     if (startNode === undefined) {
@@ -630,7 +759,9 @@ function isProtectedRangeConfirmed(
 // pre-scanが検出した保護範囲（外側sourceText基準）のうち、trailingの
 // 範囲内に完全に収まるものだけを、trailing文字列基準のoffsetへ変換して
 // 引き継ぐ（collectNestedRangesFromTrailingの逆方向の変換）。
-function extractProtectedRangesForTrailing(
+// enhanced-markdown.tsのjoinSplitCallouts（callout分裂結合のtrailing）も
+// 同じ変換を必要とするためexportする（Phase 10）。
+export function extractProtectedRangesForTrailing(
   protectedRanges: readonly ProtectedRange[],
   trailingBaseOffset: number,
   trailingLength: number,

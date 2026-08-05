@@ -228,10 +228,105 @@ describe('transformEnhancedMarkdown', () => {
     );
   });
 
-  it('synced_block終了タグ直後（空行なし）に本文が続く場合は展開せず元のHTMLを維持する', async () => {
+  it('synced_block終了タグ直後（空行なし）に本文が続く場合もtrailingを失わず展開し、後続本文を独立した段落として保全する', async () => {
     const input =
       '<synced_block url="https://example.com">\nBody\n</synced_block>\nTrailing text';
-    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'Body\n\nTrailing text\n',
+    );
+  });
+
+  it('synced_blockのtrailingに崩壊コードフェンスがあっても正しく修復される', async () => {
+    const input =
+      '<synced_block url="https://example.com">\nBody\n</synced_block>\n1. text\n   ```javascript\nconsole.log(1);\nconsole.log(2);\n   ```\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('Body');
+    expect(output).toContain('console.log(1);');
+    expect(output).toContain('console.log(2);');
+    expect(output).not.toContain('\\`\\`\\`');
+  });
+
+  it('同じHTMLブロックに複数のsynced_blockが続く場合、それぞれの対応する閉じタグまでを展開する', async () => {
+    const input = await readFile(
+      new URL('./fixtures/multiple-synced-blocks-input.md', import.meta.url),
+      'utf8',
+    );
+    const expected = await readFile(
+      new URL('./fixtures/multiple-synced-blocks-expected.md', import.meta.url),
+      'utf8',
+    );
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(expected);
+  });
+
+  it('対応する閉じタグを一意に判別できないsynced_blockは展開せず内容を保持する', async () => {
+    const input =
+      '<synced_block url="outer">\n<synced_block url="inner">\nInner\n</synced_block>\nTrailing';
+
+    const output = await transformEnhancedMarkdown(input);
+
+    expect(output).toContain('<synced_block url="outer">');
+    expect(output).toContain('<synced_block url="inner">');
+    expect(output).toContain('Inner');
+    expect(output).toContain('</synced_block>');
+    expect(output).toContain('Trailing');
+  });
+
+  it('別要素の引用符付き属性にsynced_blockの閉じタグ状文字列があっても外側の対応する閉じタグまでを展開する', async () => {
+    const input =
+      '<synced_block url="outer">\n<div data-value="</synced_block>">Attribute</div>\nBody after attribute\n</synced_block>\nTrailing';
+
+    const output = await transformEnhancedMarkdown(input);
+
+    expect(output).toBe(
+      '<div data-value="</synced_block>">Attribute</div>\nBody after attribute\n\nTrailing\n',
+    );
+  });
+
+  it('HTMLコメントにsynced_blockの閉じタグ状文字列があっても外側の対応する閉じタグまでを展開する', async () => {
+    const input =
+      '<synced_block url="outer">\n<!-- </synced_block> -->\nBody after comment\n</synced_block>\nTrailing';
+
+    const output = await transformEnhancedMarkdown(input);
+
+    expect(output).toBe(
+      '<!-- </synced_block> -->\n\nBody after comment\n\nTrailing\n',
+    );
+  });
+
+  it('CDATAにsynced_blockの閉じタグ状文字列があっても外側の対応する閉じタグまでを展開する', async () => {
+    const input =
+      '<synced_block url="outer">\n<![CDATA[</synced_block>]]>\nBody after CDATA\n</synced_block>\nTrailing';
+
+    const output = await transformEnhancedMarkdown(input);
+
+    expect(output).toBe(
+      '<![CDATA[</synced_block>]]>\n\nBody after CDATA\n\nTrailing\n',
+    );
+  });
+
+  it('小文字化で長さが変わるUnicode文字が本文にあっても外側の対応する閉じタグまでを展開する', async () => {
+    const input =
+      '<synced_block url="outer">\nİ before boundary\n</synced_block>\nTrailing';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'İ before boundary\n\nTrailing\n',
+    );
+  });
+
+  it('HTMLノード境界をまたぐ崩壊コードフェンスは内容を失わず安全側で未修復のまま保持する', async () => {
+    const input =
+      '<synced_block url="first">\n<callout>First note</callout>\n</synced_block>\nBetween\n<synced_block url="second">\n<callout>Second note</callout>\n</synced_block>\n- item\n  <callout>Nested note\n</callout>\n1. code example\n   ```plain text\npublic abstract class Duck {\n  QuackBehabior quackBehavior;\n\n  public void performQuack() {\n    quackBehavior.quack();\n  }\n}\n   ```\nAfter';
+
+    const output = await transformEnhancedMarkdown(input);
+
+    // 開始フェンスがHTML fragment、終了フェンスが元文書の次ノードに
+    // 分断される構造は未対応である。誤った範囲をコード化せず、著者の
+    // 本文を保全するfail-closedの特性を、境界対応の設計が決まるまで固定する。
+    expect(output).toContain('QuackBehabior quackBehavior;');
+    expect(output).toContain('public void performQuack()');
+    expect(output).toContain('```plain text\n   ```');
+    expect(output).toContain('```\nAfter\n```');
   });
 
   it('columns内にネストしたsynced_blockも元の綴りを保つ', async () => {
@@ -645,11 +740,38 @@ describe('transformEnhancedMarkdown', () => {
     expect(output).toContain('> body');
   });
 
+  it('分裂したcalloutが巻き込んだ後続本文内の崩壊コードフェンスが正しく修復される', async () => {
+    const input =
+      '例)text\n<callout icon="💡">\nbody\n\n</callout>\n1. text\n   ```javascript\nconsole.log(1);\nconsole.log(2);\n   ```\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '例)text\n\n> [!note]\n> body\n\n1. text\n   ```javascript\n   console.log(1);\n   console.log(2);\n   ```\n',
+    );
+  });
+
   it('開始calloutの直後の兄弟がhtml型でない場合は結合せず元のHTMLノードのまま出力する', async () => {
     const input =
       '例)text\n<callout icon="💡">\nbody\n\nnot html node\n\n</callout>\n';
     const output = await transformEnhancedMarkdown(input);
     expect(output).toContain('<callout');
+  });
+
+  it('リスト境界をまたぐcallout分裂（開始タグがリスト最後の項目内にネストし終了タグがリスト直後の兄弟に出現する場合）が正しく結合される', async () => {
+    const input =
+      '- item one\n- item two\n  <callout icon="💡">\n  本文\n</callout>\n続きのテキスト\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '- item one\n- item two\n  > [!note]\n  > 本文\n\n続きのテキスト\n',
+    );
+  });
+
+  it('リスト境界をまたぐcallout分裂が巻き込んだ後続本文内の崩壊コードフェンスが正しく修復される', async () => {
+    const input =
+      '- item one\n  <callout icon="💡">\n  本文\n</callout>\n1. text\n   ```javascript\nconsole.log(1);\nconsole.log(2);\n   ```\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('> [!note]');
+    expect(output).toContain('> 本文');
+    expect(output).toContain('console.log(1);');
+    expect(output).toContain('console.log(2);');
+    expect(output).not.toContain('\\`\\`\\`');
   });
 
   it('タブ開始・終了インデント、plain textのinfo string、終了フェンスがparagraph途中に吸収、直後に空行なしの本文、続いて見出しという実データ相当のケースが正しく修復される', async () => {
@@ -675,11 +797,21 @@ describe('transformEnhancedMarkdown', () => {
     );
   });
 
-  it('indentation prefix不一致（開始タブ・終了スペース+タブ）は修復しない', async () => {
+  it('indentation実効幅不一致（開始タブ4幅・終了スペース+タブ5幅）は修復しない', async () => {
     const input = '1. text\n\t```plain text\nline1\n \t```\nafter\n';
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(
       '1. text\n   ```plain text\n   ```\n\nline1\n\\`\\`\\`\nafter\n',
     );
+  });
+
+  it('indentation実効幅が一致すればraw文字列（タブ・スペース構成）が異なっても修復される（開始タブ4幅・終了スペース4幅）', async () => {
+    const input =
+      '1. text\n\t```plain text\npublic abstract class Duck{\n}\n    ```\nafter fence text.\n';
+    const output = await transformEnhancedMarkdown(input);
+    expect(output).toContain('```plain text');
+    expect(output).toContain('public abstract class Duck{');
+    expect(output).toContain('after fence text.');
+    expect(output).not.toContain('\\`\\`\\`');
   });
 
   it('paragraph内に終了フェンス候補が複数見つかる場合はどれが本当の終端か判別できず修復しない', async () => {

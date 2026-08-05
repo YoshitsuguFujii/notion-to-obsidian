@@ -107,7 +107,36 @@ const TOOL_VERSION = '0.1.0';
 // Phase 8（'11'→'12'）: 崩壊コードフェンス検出のタブインデント対応、
 // 空行を挟んで分裂したcalloutブロックの結合対応。これらのパターンを
 // 含むページの生成物が変わる。
-const TRANSFORM_VERSION = '12';
+// v13: '12'バンプ後に判明した残欠陥に対応してPhase 8の設計をさらに拡張した。
+// 崩壊コードフェンスの終端検出を「paragraph最終行限定」から「paragraph内の
+// 任意物理行を走査し候補一意性を判定する」方式へ拡張、pre-parse正規化
+// （タグ名リネーム・太字flanking補正）より前に崩壊code本文の範囲を確定する
+// pre-scanと保護範囲の整合性検証を追加、終了フェンス行がparagraph最終行と
+// 一致する場合に誤ってfail-closedになっていた境界条件バグを修正した。
+// これらのパターンを含むページの生成物が'12'時点からさらに変わる。
+// Phase 9（'13'→'14'）: paragraph吸収型シグネチャの終了フェンス候補
+// インデント判定を、raw文字列完全一致から実効幅一致（indentWidth）へ
+// 拡張した。開始・終了フェンス行のタブ・スペース構成が異なるが実効幅は
+// 一致するケース（実Vaultで確認済み）を含むページの生成物が変わる。
+// Phase 10（'14'→'15'）: 空行を挟んで分裂したcalloutブロック
+// （joinSplitCallouts）が巻き込んだ後続本文（trailing）に対し、
+// 崩壊コードフェンス修復（repairBrokenCodeFences）を再帰適用するように
+// なった。従来はtrailing内の崩壊コードフェンスが修復されず生の
+// フェンス文字列が残っていたページの生成物が変わる。
+// Phase 11（'15'→'16'）: リスト境界をまたぐcallout分裂（開始<callout>
+// タグがリスト最後のlistItem内部にネストし、終了</callout>を含む
+// ノードがそのリスト自体の直後の兄弟として出現するケース）を検出し、
+// 結合・trailing修復するようになった。従来はこのパターンが検出されず
+// 生HTMLのまま出力されていたページの生成物が変わる。
+// Phase 12（'16'→'17'）: synced_blockの閉じタグ直後（空行なし）に
+// 本文が続く場合、展開を諦めるfail-closedではなく、trailingを分離して
+// 展開しつつtrailing自体を独立にpre-scan・修復するようになった。従来は
+// このケースでsynced_block全体（巻き込んだtrailingを含む）が生HTMLの
+// まま出力されていたページの生成物が変わる。
+// v18: CommonMarkのHTMLブロックが複数のsynced_blockを吸収した場合も、
+// 同名要素の入れ子を考慮して先頭要素と対応する閉じタグまでを展開する。
+// 後続のsynced_blockを本文として誤って取り込んでいたページの生成物が変わる。
+const TRANSFORM_VERSION = '18';
 function signedUrlSafetyMessage(notionIds: ReadonlySet<string>): string {
   return `Cannot safely process retained Notion signed asset URLs on page ID(s): ${[...notionIds].sort().join(', ')}. One or more URLs could not be parsed, or their extent could not be determined from the surrounding syntax. A URL is only safe to process inside a Markdown link or image destination, an autolink such as <URL>, or a quoted HTML attribute; a bare URL is not, even when it is the whole value. In Notion, put the URL into one of those forms, then run sync --dry-run to verify the correction before syncing. Inside a code block, inline code, a page title, or a database property, none of those forms are available; remove the signed URL from that value or exclude the page from the sync instead.`;
 }

@@ -11,6 +11,9 @@ import {
 import { buildMarkdownTableText } from './table-markdown.js';
 import {
   collectCollapsedCodeRangesDeep,
+  extractProtectedRangesForTrailing,
+  findCalloutCloseTrailingRange,
+  findNestedUnclosedCalloutOpenHtml,
   repairBrokenCodeFences,
   stripPositionsDeep,
   validateProtectedRanges,
@@ -428,23 +431,181 @@ function columnsMarkdown(value: string): string | undefined {
   return output.join('\n');
 }
 
+interface SyncedBlockExpansion {
+  body: string;
+  trailing: string;
+}
+
+interface SyncedBlockRange {
+  bodyStart: number;
+  closingStart: number;
+  closingEnd: number;
+}
+
+function htmlTagEnd(value: string, tagStart: number): number | undefined {
+  let quote: '"' | "'" | undefined;
+  for (let index = tagStart + 1; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote !== undefined) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === '>') return index;
+  }
+  return undefined;
+}
+
+function hasTagNameBoundary(value: string, nameEnd: number): boolean {
+  const after = value[nameEnd];
+  return after === '>' || after === '/' || /\s/u.test(after ?? '');
+}
+
+function hasCaseInsensitivePrefixAt(
+  value: string,
+  prefix: string,
+  start: number,
+): boolean {
+  return value.slice(start, start + prefix.length).toLowerCase() === prefix;
+}
+
+// CommonMarkのHTMLブロックが後続の同名要素まで吸収しても、先頭の
+// synced_blockと対応する閉じタグだけを境界として使う。同名要素の入れ子は
+// 深さで追跡し、コード内のタグ状文字列や壊れたタグで対応関係を証明できない
+// 場合は、内容を誤って分割するより元のHTMLを保持する。
+function matchingSyncedBlockRange(value: string): SyncedBlockRange | undefined {
+  const tagName = 'synced-block';
+  const openingPrefix = `<${tagName}`;
+  const closingPrefix = `</${tagName}`;
+  if (
+    !hasCaseInsensitivePrefixAt(value, openingPrefix, 0) ||
+    !hasTagNameBoundary(value, openingPrefix.length)
+  )
+    return undefined;
+  const openingEnd = htmlTagEnd(value, 0);
+  if (
+    openingEnd === undefined ||
+    value.slice(0, openingEnd).trimEnd().endsWith('/')
+  )
+    return undefined;
+
+  let uneditableRanges: Range[];
+  try {
+    uneditableRanges = collectUneditableRanges(value.slice(openingEnd + 1)).map(
+      (range) => ({
+        start: range.start + openingEnd + 1,
+        end: range.end + openingEnd + 1,
+      }),
+    );
+  } catch {
+    return undefined;
+  }
+
+  let depth = 1;
+  let cursor = openingEnd + 1;
+  while (cursor < value.length) {
+    const tagStart = value.indexOf('<', cursor);
+    if (tagStart === -1) return undefined;
+    const uneditableRange = uneditableRanges.find(
+      (range) => tagStart >= range.start && tagStart < range.end,
+    );
+    if (uneditableRange !== undefined) {
+      cursor = uneditableRange.end;
+      continue;
+    }
+
+    if (value.startsWith('<!--', tagStart)) {
+      const commentEnd = value.indexOf('-->', tagStart + 4);
+      if (commentEnd === -1) return undefined;
+      cursor = commentEnd + 3;
+      continue;
+    }
+    if (hasCaseInsensitivePrefixAt(value, '<![cdata[', tagStart)) {
+      const cdataEnd = value.indexOf(']]>', tagStart + 9);
+      if (cdataEnd === -1) return undefined;
+      cursor = cdataEnd + 3;
+      continue;
+    }
+
+    const marker = value[tagStart + 1];
+    const nameStart = marker === '/' ? tagStart + 2 : tagStart + 1;
+    if (!/[A-Za-z]/u.test(value[nameStart] ?? '')) {
+      const isDeclaration = marker === '!' || marker === '?';
+      if (!isDeclaration) {
+        cursor = tagStart + 1;
+        continue;
+      }
+    }
+
+    const tagEnd = htmlTagEnd(value, tagStart);
+    if (tagEnd === undefined) return undefined;
+
+    const isClosing = hasCaseInsensitivePrefixAt(
+      value,
+      closingPrefix,
+      tagStart,
+    );
+    const isOpening = hasCaseInsensitivePrefixAt(
+      value,
+      openingPrefix,
+      tagStart,
+    );
+    const prefix = isClosing
+      ? closingPrefix
+      : isOpening
+        ? openingPrefix
+        : undefined;
+    if (prefix === undefined) {
+      cursor = tagEnd + 1;
+      continue;
+    }
+    const nameEnd = tagStart + prefix.length;
+    if (!hasTagNameBoundary(value, nameEnd)) {
+      cursor = tagEnd + 1;
+      continue;
+    }
+
+    if (isClosing) {
+      if (value.slice(nameEnd, tagEnd).trim() !== '') return undefined;
+      depth -= 1;
+      if (depth === 0)
+        return {
+          bodyStart: openingEnd + 1,
+          closingStart: tagStart,
+          closingEnd: tagEnd + 1,
+        };
+    } else if (!value.slice(tagStart, tagEnd).trimEnd().endsWith('/')) {
+      depth += 1;
+    }
+    cursor = tagEnd + 1;
+  }
+  return undefined;
+}
+
 // Notionの同期ブロック（synced_block、リネーム後synced-block）は、複数箇所に
 // 同一内容を複製表示するUI機能であり、片方向ミラーであるObsidian側では
 // 複製元・複製先の区別に意味が無い。タグを外し中身をそのまま段落として残す。
 // url属性は開始タグ側にありbody抽出の対象外なので、リンクとして誤認識される
 // ことはない。
-function syncedBlockMarkdown(value: string): string | undefined {
+//
+// HTMLブロックは空行まで後続行を吸収するため、閉じタグ直後（空行なし）に
+// 本文が続く場合、その本文（trailing）も同じノードのvalueに混入する。
+// 従来は展開自体を諦めるfail-closedだったが（trailingを失わないための
+// 安全策）、実データでこの巻き込みが数KB規模の後続コンテンツ全体
+// （別のリスト・コードフェンス等）を丸ごと生HTMLのまま出力する重大な
+// 表示崩れを引き起こすことが判明した。Phase 10/11のcallout trailing
+// 処理と同型のパターンで、trailingを分離して呼び出し元で独立に
+// 再parse・修復する設計へ変更した（Phase 12）。
+function syncedBlockMarkdown(value: string): SyncedBlockExpansion | undefined {
   const trimmed = value.trim();
-  const closingTag = '</synced-block>';
-  const closingStart = trimmed.toLowerCase().lastIndexOf(closingTag);
-  // 閉じタグが無ければ展開できない（elementBodyがundefinedを返す経路と同じ）。
-  if (closingStart === -1) return undefined;
-  // HTMLブロックは空行まで後続行を吸収するため、閉じタグ直後（空行なし）に
-  // 本文が続く場合は同じノードにその本文が混入している。安全側に倒し、
-  // タグ単体で完結する場合（閉じタグ以降が空白のみ）に限って展開する。
-  if (trimmed.slice(closingStart + closingTag.length).trim() !== '')
-    return undefined;
-  return elementBody(value, 'synced-block');
+  const range = matchingSyncedBlockRange(trimmed);
+  if (range === undefined) return undefined;
+  const body = trimmed.slice(range.bodyStart, range.closingStart).trim();
+  const trailing = trimmed.slice(range.closingEnd).replace(/^\r?\n/u, '');
+  return { body, trailing };
 }
 
 // `<table>` の中身は、tableMarkdown が丸ごと置換する対象になる。<tr>/<td> だけを
@@ -751,11 +912,102 @@ const calloutFragmentProcessor = unified().use(remarkParse).use(remarkGfm);
 // 変換しない安全側判定）。終了ノードが後続本文を巻き込んでいる場合
 // （CommonMarkのHTMLブロックが次の空行まで後続行を巻き込む挙動）、その
 // 本文を生Markdown文字列として再parseし、結合したcalloutの直後へ復元する。
-function joinSplitCallouts(children: RootContent[]): RootContent[] {
+//
+// 巻き込まれた本文（trailing）自体に崩壊コードフェンスがネストしている
+// 場合（Phase 10、実データで確認）、pre-scan（broken-code-fence.tsの
+// collectCollapsedCodeRanges）が同じcallout分裂パターンを辿って事前に
+// 検出した保護範囲（`protectedRanges`）をtrailing相対offsetへ変換して
+// `repairBrokenCodeFences`を再帰適用する（broken-code-fence.ts自身の
+// trailing処理と同型のパターン）。offset計算に失敗した場合（通常到達
+// しない想定）は、修復を諦めて従来どおりparseのみ行う（fail-closed。
+// 情報損失にはならない）。
+function joinSplitCallouts(
+  children: RootContent[],
+  sourceText: string,
+  protectedRanges: readonly ProtectedRange[],
+): RootContent[] {
   const result: RootContent[] = [];
   let index = 0;
   while (index < children.length) {
     const node = children[index]!;
+    // リスト境界をまたぐcallout分裂（Phase 11）: 開始<callout>タグが
+    // リストの最後のlistItemの最後の子としてhtmlノードで存在し、対応
+    // する</callout>がそのリスト自体の直後の兄弟ノードとして出現する
+    // ケース。CommonMarkのHTML block吸収がlistItem/listのコンテナ境界を
+    // 越えて継続するため、開始側と終了側が異なるchildren配列に分裂する
+    // （開始paragraph・終了htmlが同一children配列内に隣接する通常の
+    // callout分裂とは別パターン。実データで確認済み）。
+    if (node.type === 'list') {
+      const nestedOpen = findNestedUnclosedCalloutOpenHtml(node);
+      const nextSibling = children[index + 1];
+      const openStart = nestedOpen?.position?.start.offset;
+      const openEnd = nestedOpen?.position?.end.offset;
+      const closeRange =
+        nestedOpen !== undefined && nextSibling?.type === 'html'
+          ? findCalloutCloseTrailingRange(sourceText, nextSibling)
+          : undefined;
+      const closeStart = nextSibling?.position?.start.offset;
+      if (
+        nestedOpen !== undefined &&
+        nextSibling !== undefined &&
+        closeRange !== undefined &&
+        openStart !== undefined &&
+        openEnd !== undefined &&
+        closeStart !== undefined
+      ) {
+        const lastItem = node.children.at(-1)!;
+        const remainingChildren = lastItem.children.slice(0, -1);
+        const remainingItems =
+          remainingChildren.length > 0
+            ? [
+                ...node.children.slice(0, -1),
+                { ...lastItem, children: remainingChildren },
+              ]
+            : node.children.slice(0, -1);
+        if (remainingItems.length > 0)
+          result.push({ ...node, children: remainingItems });
+        const combined =
+          sourceText.slice(openStart, openEnd) +
+          '\n' +
+          sourceText.slice(closeStart, closeRange.closeTagEnd);
+        result.push({ type: 'html', value: combined });
+        const trailing = sourceText.slice(
+          closeRange.trailingStart,
+          closeRange.trailingEnd,
+        );
+        if (trailing.length > 0) {
+          try {
+            const fragment = calloutFragmentProcessor.parse(trailing);
+            const trailingProtectedRanges = validateProtectedRanges(
+              extractProtectedRangesForTrailing(
+                protectedRanges,
+                closeRange.trailingStart,
+                trailing.length,
+              ),
+              trailing.length,
+            );
+            fragment.children = repairBrokenCodeFences(
+              fragment.children,
+              trailing,
+              trailingProtectedRanges,
+            );
+            for (const fragmentChild of fragment.children)
+              stripPositionsDeep(fragmentChild);
+            result.push(...fragment.children);
+          } catch {
+            // remark-parseは通常どのような文字列に対しても例外を投げない
+            // ため実行時には到達しない想定だが、中途半端に結合するより
+            // 安全側に倒し、このcalloutは結合せず元のノードを維持する
+            // フォールバックとして残す（他のtrailing処理と同型パターン）。
+            result.push(node, nextSibling);
+            index += 2;
+            continue;
+          }
+        }
+        index += 2;
+        continue;
+      }
+    }
     const openInfo = unclosedCalloutOpenParagraph(node);
     const nextNode = children[index + 1];
     if (openInfo === undefined || nextNode?.type !== 'html') {
@@ -778,10 +1030,32 @@ function joinSplitCallouts(children: RootContent[]): RootContent[] {
     }
     const combined = `${openInfo.openingTag}${openInfo.bodyPrefix}${closeInfo.before}\n</callout>`;
     result.push({ type: 'html', value: combined });
-    const trailing = closeInfo.after.replace(/^\r?\n/u, '');
+    const trailingRange = findCalloutCloseTrailingRange(sourceText, nextNode);
+    const trailing =
+      trailingRange !== undefined
+        ? sourceText.slice(
+            trailingRange.trailingStart,
+            trailingRange.trailingEnd,
+          )
+        : closeInfo.after.replace(/^\r?\n/u, '');
     if (trailing.length > 0) {
       try {
         const fragment = calloutFragmentProcessor.parse(trailing);
+        if (trailingRange !== undefined) {
+          const trailingProtectedRanges = validateProtectedRanges(
+            extractProtectedRangesForTrailing(
+              protectedRanges,
+              trailingRange.trailingStart,
+              trailing.length,
+            ),
+            trailing.length,
+          );
+          fragment.children = repairBrokenCodeFences(
+            fragment.children,
+            trailing,
+            trailingProtectedRanges,
+          );
+        }
         for (const fragmentChild of fragment.children)
           stripPositionsDeep(fragmentChild);
         result.push(...fragment.children);
@@ -811,7 +1085,11 @@ function transformParent(
     sourceText,
     protectedRanges,
   );
-  parent.children = joinSplitCallouts(parent.children as RootContent[]);
+  parent.children = joinSplitCallouts(
+    parent.children as RootContent[],
+    sourceText,
+    protectedRanges,
+  );
   const transformed: RootContent[] = [];
   for (const child of parent.children as RootContent[]) {
     const inline = inlineCallout(child);
@@ -862,17 +1140,61 @@ function transformParent(
         const fragment = unified()
           .use(remarkParse)
           .use(remarkGfm)
-          .parse(syncedBlock);
+          .parse(syncedBlock.body);
         // 中身にcallout等の既存Enhanced Markdown構文が入っていてもそのまま
         // 維持し後段の既存変換が適用されるよう、再帰的に変換する。
-        // fragmentはsyncedBlock文字列を独立に再parseしたものなので、
-        // 位置オフセットの基準もsyncedBlock自身になる。pre-scanは元文書
-        // 全体に対してのみ行っており、syncedBlock文字列自体のoffset基準
-        // には対応しないため、空配列を渡す（内部で崩壊コードフェンスが
-        // 検出されてもfail-closedとなる。既知の制約）。
-        transformParent(fragment, syncedBlock, []);
+        // fragmentはsyncedBlock.body文字列を独立に再parseしたものなので、
+        // 位置オフセットの基準もbody自身になる。pre-scanは元文書全体に
+        // 対してのみ行っており、body文字列自体のoffset基準には対応しない
+        // ため、空配列を渡す（内部で崩壊コードフェンスが検出されても
+        // fail-closedとなる。既知の制約）。
+        transformParent(fragment, syncedBlock.body, []);
         for (const node of fragment.children) restoreUnderscoreTagsDeep(node);
         transformed.push(...fragment.children);
+        // 閉じタグ直後（空行なし）に巻き込まれた後続本文（trailing）は、
+        // Phase 10/11のcallout trailing処理と同型のパターンで扱う。
+        // trailingは独立した文字列のため、その基準でpre-scanを行い
+        // （collectCollapsedCodeRangesDeep）、崩壊コードフェンスの保護
+        // 範囲を確定してから修復する（外側のprotectedRangesとは独立）。
+        if (syncedBlock.trailing.length > 0) {
+          try {
+            const trailingFragment = unified()
+              .use(remarkParse)
+              .use(remarkGfm)
+              .parse(syncedBlock.trailing);
+            const trailingProtectedRanges = validateProtectedRanges(
+              collectCollapsedCodeRangesDeep(
+                trailingFragment,
+                syncedBlock.trailing,
+              ),
+              syncedBlock.trailing.length,
+            );
+            trailingFragment.children = repairBrokenCodeFences(
+              trailingFragment.children,
+              syncedBlock.trailing,
+              trailingProtectedRanges,
+            );
+            transformParent(
+              trailingFragment,
+              syncedBlock.trailing,
+              trailingProtectedRanges,
+            );
+            for (const node of trailingFragment.children) {
+              restoreUnderscoreTagsDeep(node);
+              stripPositionsDeep(node);
+            }
+            transformed.push(...trailingFragment.children);
+          } catch {
+            // remark-parseは通常どのような文字列に対しても例外を投げない
+            // ため実行時には到達しない想定だが、中途半端に変換するより
+            // 安全側に倒し、trailingは生文字列のまま段落として保全する
+            // （情報損失にはならない）。
+            transformed.push({
+              type: 'paragraph',
+              children: [{ type: 'text', value: syncedBlock.trailing }],
+            });
+          }
+        }
         continue;
       }
       transformed.push({
