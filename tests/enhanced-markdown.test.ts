@@ -1016,4 +1016,27 @@ describe('transformEnhancedMarkdown', () => {
     expect(output).toContain('**not real bold**');
     expect(output).toContain('after');
   });
+
+  it('閉じタグ直後に空行がないcalloutは、CommonMarkのHTMLブロック(type 7)吸収により後続の見出しが巻き込まれても内容を失わず、見出しとして保持する', async () => {
+    const input = '<callout icon="💡">\nbody\n</callout>\n## Next\nmore\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '> [!note]\n> body\n\n## Next\n\nmore\n',
+    );
+  });
+
+  it('閉じタグ直後に空行がなく後続にリストが続くcalloutは、リストを見出し同様に独立したブロックとして保持する', async () => {
+    const input =
+      '<callout icon="💡">\nbody\n</callout>\n- item one\n- item two\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '> [!note]\n> body\n\n- item one\n- item two\n',
+    );
+  });
+
+  it('閉じタグ直後に空行がなく後続に別のcalloutが続く場合、両方とも正しく展開され取り違えない', async () => {
+    const input =
+      '<callout icon="💡">\nfirst\n</callout>\n<callout icon="💡">\nsecond\n</callout>\n';
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      '> [!note]\n> first\n\n> [!note]\n> second\n',
+    );
+  });
 });

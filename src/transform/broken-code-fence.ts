@@ -535,16 +535,24 @@ export interface CalloutCloseTrailingRange {
 // 方針。remarkのparse正規化でvalueがsourceTextと厳密に一致しない場合が
 // あっても、offsetベースなら安全）。`</callout>`を含まない、または
 // position情報が欠落している場合はundefinedを返す。
+// enhanced-markdown.tsのinlineKnownTagNamesと同じ値だが、依存方向を
+// 保つため（broken-code-fence.tsはenhanced-markdown.tsに依存しない）
+// ここで複製する。callout/synced-block/synced-block-referenceの
+// リスト境界分裂検出はPhase 15でcallout専用からタグ名パラメータ化した。
+export type KnownBlockTagName =
+  'callout' | 'synced-block' | 'synced-block-reference';
+
 export function findCalloutCloseTrailingRange(
   sourceText: string,
   closeNode: RootContent,
+  tagName: KnownBlockTagName = 'callout',
 ): CalloutCloseTrailingRange | undefined {
   if (closeNode.type !== 'html') return undefined;
   const start = offsetOf(closeNode, 'start');
   const end = offsetOf(closeNode, 'end');
   if (start === undefined || end === undefined) return undefined;
   const raw = sourceText.slice(start, end);
-  const closeTag = '</callout>';
+  const closeTag = `</${tagName}>`;
   const closeIndex = raw.toLowerCase().indexOf(closeTag);
   if (closeIndex === -1) return undefined;
   const closeTagEnd = start + closeIndex + closeTag.length;
@@ -554,24 +562,30 @@ export function findCalloutCloseTrailingRange(
   return { trailingStart, trailingEnd: end, closeTagEnd };
 }
 
-// リスト境界をまたぐcallout分裂（Phase 11）: 開始<callout>タグが、
-// リストの最後のlistItemの最後の子としてブロックレベルのhtmlノードで
-// 存在し、そのノード自身の中に対応する</callout>を含まない場合を検出
-// する。「最後のlistItemの最後の子」限定はfindTrailingBrokenCodeStart
-// と同じ設計判断（CommonMarkのHTML block吸収がコンテナ境界で打ち切ら
-// れる位置は、リスト全体の最後のlistItemの末尾に限られるため）。
-// 番号付き・番号なしどちらのリストにも起こりうるため、orderedの制限は
-// 設けない（Phase 5の崩壊コードフェンス検出とは異なる制約）。
+// リスト境界をまたぐcallout/synced-block/synced-block-reference分裂
+// （Phase 11、Phase 15でタグ名パラメータ化）: 開始タグが、リストの
+// 最後のlistItemの最後の子としてブロックレベルのhtmlノードで存在し、
+// そのノード自身の中に対応する閉じタグを含まない場合を検出する。
+// 「最後のlistItemの最後の子」限定はfindTrailingBrokenCodeStartと
+// 同じ設計判断（CommonMarkのHTML block吸収がコンテナ境界で打ち切られる
+// 位置は、リスト全体の最後のlistItemの末尾に限られるため）。番号付き・
+// 番号なしどちらのリストにも起こりうるため、orderedの制限は設けない
+// （Phase 5の崩壊コードフェンス検出とは異なる制約）。
 export function findNestedUnclosedCalloutOpenHtml(
   list: List,
+  tagName: KnownBlockTagName = 'callout',
 ): RootContent | undefined {
   const lastItem = list.children.at(-1);
   const lastChild = lastItem?.children.at(-1);
+  // タグ名の後にwhitespace/`>`/`/`が続くことを要求し、`synced-block`が
+  // `synced-block-reference`のprefixとして誤マッチしないようにする
+  // （Phase 14のrestoreKnownUnderscoreTagsで修正した誤マッチと同型）。
+  const openTagPattern = new RegExp(`^<${tagName}(?:[\\s>/]|$)`, 'iu');
   if (
     lastChild === undefined ||
     lastChild.type !== 'html' ||
-    !lastChild.value.trim().toLowerCase().startsWith('<callout') ||
-    lastChild.value.toLowerCase().includes('</callout>')
+    !openTagPattern.test(lastChild.value.trim()) ||
+    lastChild.value.toLowerCase().includes(`</${tagName}>`)
   )
     return undefined;
   return lastChild;

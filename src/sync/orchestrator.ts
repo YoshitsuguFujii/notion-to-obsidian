@@ -139,7 +139,12 @@ const TOOL_VERSION = '0.1.0';
 // v19: 同期ブロック参照タグと、段落中間でinline HTMLとして解釈される
 // callout・同期ブロックを展開する。前後の本文を保ったままブロック境界を
 // 復元できるため、従来生HTMLとして残っていたページの生成物が変わる。
-const TRANSFORM_VERSION = '19';
+// v20: 閉じタグ直後に空行がないcallout/synced_block/synced_block_referenceが
+// CommonMarkのHTMLブロック(type 7)吸収により後続文書（見出し・リスト・
+// 別の既知タグ等）を巻き込む問題と、リスト境界をまたぐsynced_block/
+// synced_block_reference分裂（従来calloutのみ対応）を修正した。該当パターンを
+// 含んでいたページの生成物が変わる。
+const TRANSFORM_VERSION = '20';
 function signedUrlSafetyMessage(notionIds: ReadonlySet<string>): string {
   return `Cannot safely process retained Notion signed asset URLs on page ID(s): ${[...notionIds].sort().join(', ')}. One or more URLs could not be parsed, or their extent could not be determined from the surrounding syntax. A URL is only safe to process inside a Markdown link or image destination, an autolink such as <URL>, or a quoted HTML attribute; a bare URL is not, even when it is the whole value. In Notion, put the URL into one of those forms, then run sync --dry-run to verify the correction before syncing. Inside a code block, inline code, a page title, or a database property, none of those forms are available; remove the signed URL from that value or exclude the page from the sync instead.`;
 }
