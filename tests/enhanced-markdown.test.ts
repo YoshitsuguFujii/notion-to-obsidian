@@ -215,6 +215,108 @@ describe('transformEnhancedMarkdown', () => {
     await expect(transformEnhancedMarkdown(input)).resolves.toBe('Body\n');
   });
 
+  it('synced_block_referenceは本文を展開し、閉じタグ後の本文を保持する', async () => {
+    const input =
+      '<synced_block_reference url="https://example.com">\nBody\n</synced_block_reference>\nTrailing';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'Body\n\nTrailing\n',
+    );
+  });
+
+  it('段落中間のcalloutを前後の本文を保って独立したブロックへ展開する', async () => {
+    const input = 'Before\n<callout>Note</callout>\nAfter';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'Before\n\n> [!note]\n> Note\n\nAfter\n',
+    );
+  });
+
+  it('段落中間のcallout内の取り消し線を保持して展開する', async () => {
+    const input = 'Before <callout>~~struck~~</callout> After';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'Before\n\n> [!note]\n> ~~struck~~\n\nAfter\n',
+    );
+  });
+
+  it('段落中間のsynced_block内calloutと前後の装飾付き本文を展開する', async () => {
+    const input =
+      'Before <span color="orange">**Composition**</span> and <span underline="true">compose</span>.\n<synced_block url="https://example.com">\n<callout icon="💡">\n**Principle**\nPrefer composition\n</callout>\n</synced_block>\nAfter';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'Before ==**Composition**== and <u>compose</u>.\n\n> [!note]\n> **Principle**\n> Prefer composition\n\nAfter\n',
+    );
+  });
+
+  it('同一段落内の複数calloutを出現順に展開する', async () => {
+    const input =
+      'Before <callout>First</callout> Middle <callout>Second</callout> After';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'Before\n\n> [!note]\n> First\n\nMiddle\n\n> [!note]\n> Second\n\nAfter\n',
+    );
+  });
+
+  it('入れ子のsynced_blockを対応する閉じタグまで展開する', async () => {
+    const input =
+      'Before <synced_block url="outer">Outer <synced_block url="inner">Inner</synced_block> Tail</synced_block> After';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(
+      'Before\n\nOuter\n\nInner\n\nTail\n\nAfter\n',
+    );
+  });
+
+  it('対応関係を確定できない段落中間の既知タグは本文とともに保持する', async () => {
+    const input =
+      'Before <callout>Note <synced_block url="x"></callout></synced_block> After';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('閉じタグがない段落中間の既知タグは本文とともに保持する', async () => {
+    const input = 'Before <callout>Note After';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('対応する開始タグがない段落中間の閉じタグは本文とともに保持する', async () => {
+    const input = 'Before Note</callout> After';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('calloutに別のcalloutが入れ子の場合は本文とともに保持する', async () => {
+    const input =
+      'Before <callout>Outer <callout>Inner</callout></callout> After';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('calloutに似た未知タグは変換せず本文を保持する', async () => {
+    const input = 'Before <calloutish>Note</calloutish> After';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('codeとinlineCode内のsynced_block_reference状文字列を変更しない', async () => {
+    const input =
+      'Inline `<synced_block_reference>text</synced_block_reference>`\n\n```text\n<synced_block_reference>text</synced_block_reference>\n```';
+
+    await expect(transformEnhancedMarkdown(input)).resolves.toBe(`${input}\n`);
+  });
+
+  it('fragment内のcodeとinlineCodeにあるハイフン形参照タグを変更しない', async () => {
+    const input =
+      '<columns>\n<column>\n`<synced-block-reference>`\n\n```text\n<synced-block-reference>\n```\n</column>\n</columns>';
+
+    const output = await transformEnhancedMarkdown(input);
+
+    expect(output).toContain('`<synced-block-reference>`');
+    expect(output).toContain('```text\n<synced-block-reference>\n```');
+    expect(output).not.toContain('<synced_block-reference>');
+  });
+
   it('空のsynced_blockはエラーにならず何も残さない', async () => {
     const input = '<synced_block url="https://example.com"></synced_block>';
     await expect(transformEnhancedMarkdown(input)).resolves.toBe('');
@@ -337,11 +439,11 @@ describe('transformEnhancedMarkdown', () => {
     );
   });
 
-  it('callout内にネストしたsynced_blockも元の綴りを保つ', async () => {
+  it('callout内にネストしたsynced_blockを本文として展開する', async () => {
     const input =
       '<callout>See <synced_block url="https://example.com">Body</synced_block></callout>';
     await expect(transformEnhancedMarkdown(input)).resolves.toBe(
-      '> [!note]\n> See <synced_block url="https://example.com">Body</synced_block>\n',
+      '> [!note]\n> See\n>\n> Body\n',
     );
   });
 

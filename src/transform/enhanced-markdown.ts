@@ -63,7 +63,14 @@ function isWithinRange(index: number, ranges: readonly Range[]): boolean {
 // HTMLノードとして認識されず、地の文としてエスケープされ破損する。
 // 既知タグ名のみをホワイトリストでリネームし、remarkがHTMLとして正しく
 // 認識できる形にする。code/inlineCode内の同名文字列は書き換えない。
-const knownUnderscoreTagNames = ['synced_block', 'table_of_contents'] as const;
+const knownUnderscoreTagNames = [
+  'synced_block',
+  'synced_block_reference',
+  'table_of_contents',
+] as const;
+const syncedBlockTagNames = ['synced-block', 'synced-block-reference'] as const;
+const inlineKnownTagNames = ['callout', ...syncedBlockTagNames] as const;
+type InlineKnownTagName = (typeof inlineKnownTagNames)[number];
 
 // `externalProtectedRanges`は、崩壊コードフェンスのcode本文として
 // pre-scan（collectCollapsedCodeRangesDeep）で事前確定した範囲。
@@ -235,6 +242,11 @@ interface ZeroWidthSpaceEscapeResult {
   sentinel: string | undefined;
 }
 
+interface HyphenatedTagEscapeResult {
+  text: string;
+  sentinel: string | undefined;
+}
+
 function pickUnusedSentinel(markdown: string): string | undefined {
   return ZERO_WIDTH_SPACE_SENTINEL_CANDIDATES.find(
     (candidate) => !markdown.includes(candidate),
@@ -267,16 +279,80 @@ function restoreEscapedZeroWidthSpaces(
   return value.replaceAll(sentinel, ZERO_WIDTH_SPACE);
 }
 
+function collectBacktickDelimitedRanges(markdown: string): Range[] {
+  const ranges: Range[] = [];
+  let cursor = 0;
+  while (cursor < markdown.length) {
+    if (markdown[cursor] !== '`') {
+      cursor += 1;
+      continue;
+    }
+    let markerEnd = cursor + 1;
+    while (markdown[markerEnd] === '`') markerEnd += 1;
+    const marker = markdown.slice(cursor, markerEnd);
+    const closingStart = markdown.indexOf(marker, markerEnd);
+    if (closingStart === -1) {
+      cursor = markerEnd;
+      continue;
+    }
+    ranges.push({ start: cursor, end: closingStart + marker.length });
+    cursor = closingStart + marker.length;
+  }
+  return ranges;
+}
+
+// HTMLブロック内のcode/inlineCodeは初回parseで不透明になる場合があり、
+// リネーム痕跡を復元する段階では、元からハイフン形だったタグと
+// アンダースコア形からリネームされたタグを区別できない。元からハイフン形の
+// タグだけを同じ長さのsentinelで退避し、復元対象から外すことでcode本文を
+// 変更しない。
+function escapeExistingHyphenatedKnownTagsInCode(
+  markdown: string,
+): HyphenatedTagEscapeResult {
+  let uneditableRanges: Range[];
+  try {
+    uneditableRanges = [
+      ...collectUneditableRanges(markdown),
+      ...collectBacktickDelimitedRanges(markdown),
+    ];
+  } catch {
+    return { text: markdown, sentinel: undefined };
+  }
+  if (uneditableRanges.length === 0)
+    return { text: markdown, sentinel: undefined };
+  const sentinel = pickUnusedSentinel(markdown);
+  if (sentinel === undefined) return { text: markdown, sentinel: undefined };
+  const renamedTagNames = knownUnderscoreTagNames
+    .map((name) => name.replaceAll('_', '-'))
+    .sort((left, right) => right.length - left.length);
+  const pattern = new RegExp(`</?(${renamedTagNames.join('|')})\\b`, 'g');
+  let result = '';
+  let cursor = 0;
+  for (const match of markdown.matchAll(pattern)) {
+    const index = match.index;
+    if (
+      !uneditableRanges.some(
+        (range) => index >= range.start && index + match[0].length <= range.end,
+      )
+    )
+      continue;
+    result +=
+      markdown.slice(cursor, index) + match[0].replaceAll('-', sentinel);
+    cursor = index + match[0].length;
+  }
+  return { text: result + markdown.slice(cursor), sentinel };
+}
+
 // リネーム後のタグ名が、削除・変換のいずれにも該当せずhtmlノードとして
 // そのまま出力に残る場合（例: 直後に空行なしで本文が続くtable_of_contents、
 // 変換が未実装のタグ）に、内部処理用のリネーム痕跡を元の綴りへ戻す。
 // html型ノードはremark-stringifyがそのまま出力するため、ここで戻しても
 // 再度エスケープされて壊れることはない（実測で確認済み）。
 function restoreKnownUnderscoreTags(value: string): string {
-  const pattern = new RegExp(
-    `</?(${knownUnderscoreTagNames.map((name) => name.replaceAll('_', '-')).join('|')})\\b`,
-    'g',
-  );
+  const renamedTagNames = knownUnderscoreTagNames
+    .map((name) => name.replaceAll('_', '-'))
+    .sort((left, right) => right.length - left.length);
+  const pattern = new RegExp(`</?(${renamedTagNames.join('|')})\\b`, 'g');
   return value.replace(pattern, (match) => match.replaceAll('-', '_'));
 }
 
@@ -298,12 +374,12 @@ const restorableHtmlOnlyNodeTypes = new Set(['html']);
 // のHTMLブロック内にあった文字列だけが由来のため、元文書の正規のcode/
 // inlineCodeノードを壊す心配はない）。
 //
-// 一方、1行に収まるsynced_block（inlineSyncedBlockChildren）の中身は元文書の
-// 1回目のparseで既にcode/inlineCodeノードとして認識済み＝リネーム対象外
-// だったノードそのものであり、fragment由来ではない。ここでcode/inlineCode
-// まで復元対象にすると、著者が本文にハイフン形（例: `<synced-block>`）を
-// インラインコードとして書いていた場合に誤って書き換えてしまう。そのため
-// inline経路ではhtml型のみを復元対象にする。
+// 一方、expandInlineKnownTagsで展開される段落中間のsynced_blockの中身は
+// 元文書の1回目のparseで既にcode/inlineCodeノードとして認識済み＝リネーム
+// 対象外だったノードそのものであり、fragment由来ではない。ここでcode/
+// inlineCodeまで復元対象にすると、著者が本文にハイフン形（例:
+// `<synced-block>`）をインラインコードとして書いていた場合に誤って書き換えて
+// しまう。そのため、この経路ではhtml型のみを復元対象にする。
 function restoreUnderscoreTagsDeep(
   node: HtmlLikeNode,
   restorableTypes: ReadonlySet<string> = restorableFragmentNodeTypes,
@@ -373,47 +449,6 @@ function calloutMarkdown(value: string): string | undefined {
   return formatCallout(openingTag, body);
 }
 
-function inlineCallout(child: RootContent): string | undefined {
-  if (child.type !== 'paragraph' || child.children.length < 3) return undefined;
-  const first = child.children[0];
-  const last = child.children.at(-1);
-  if (
-    first?.type !== 'html' ||
-    !first.value.toLowerCase().startsWith('<callout') ||
-    last?.type !== 'html' ||
-    last.value.toLowerCase() !== '</callout>'
-  )
-    return undefined;
-  const paragraph = {
-    type: 'paragraph' as const,
-    children: child.children.slice(1, -1),
-  };
-  const body = unified()
-    .use(remarkStringify)
-    .stringify({ type: 'root', children: [paragraph] })
-    .trim();
-  return formatCallout(first.value, body);
-}
-
-// 1行に収まるsynced_block（例: `<synced_block ...>Body</synced_block>`）は、
-// 段落内の開始・終了タグに挟まれたinlineノードとしてASTに載る（callout同様）。
-// 中身のノードをそのまま段落の子として展開する。
-function inlineSyncedBlockChildren(
-  child: RootContent,
-): PhrasingContent[] | undefined {
-  if (child.type !== 'paragraph' || child.children.length < 2) return undefined;
-  const first = child.children[0];
-  const last = child.children.at(-1);
-  if (
-    first?.type !== 'html' ||
-    !first.value.toLowerCase().startsWith('<synced-block') ||
-    last?.type !== 'html' ||
-    last.value.toLowerCase() !== '</synced-block>'
-  )
-    return undefined;
-  return child.children.slice(1, -1);
-}
-
 function columnsMarkdown(value: string): string | undefined {
   const body = elementBody(value, 'columns');
   if (body === undefined) return undefined;
@@ -476,8 +511,10 @@ function hasCaseInsensitivePrefixAt(
 // synced_blockと対応する閉じタグだけを境界として使う。同名要素の入れ子は
 // 深さで追跡し、コード内のタグ状文字列や壊れたタグで対応関係を証明できない
 // 場合は、内容を誤って分割するより元のHTMLを保持する。
-function matchingSyncedBlockRange(value: string): SyncedBlockRange | undefined {
-  const tagName = 'synced-block';
+function matchingSyncedBlockRange(
+  value: string,
+  tagName: (typeof syncedBlockTagNames)[number],
+): SyncedBlockRange | undefined {
   const openingPrefix = `<${tagName}`;
   const closingPrefix = `</${tagName}`;
   if (
@@ -599,13 +636,182 @@ function matchingSyncedBlockRange(value: string): SyncedBlockRange | undefined {
 // 表示崩れを引き起こすことが判明した。Phase 10/11のcallout trailing
 // 処理と同型のパターンで、trailingを分離して呼び出し元で独立に
 // 再parse・修復する設計へ変更した（Phase 12）。
-function syncedBlockMarkdown(value: string): SyncedBlockExpansion | undefined {
+function syncedBlockMarkdown(
+  value: string,
+  tagName: (typeof syncedBlockTagNames)[number],
+): SyncedBlockExpansion | undefined {
   const trimmed = value.trim();
-  const range = matchingSyncedBlockRange(trimmed);
+  const range = matchingSyncedBlockRange(trimmed, tagName);
   if (range === undefined) return undefined;
   const body = trimmed.slice(range.bodyStart, range.closingStart).trim();
   const trailing = trimmed.slice(range.closingEnd).replace(/^\r?\n/u, '');
   return { body, trailing };
+}
+
+function inlineParagraph(children: readonly PhrasingContent[]): RootContent[] {
+  if (children.length === 0) return [];
+  return [{ type: 'paragraph', children: [...children] }];
+}
+
+function trimInlineBoundaryWhitespace(
+  children: readonly PhrasingContent[],
+  edge: 'start' | 'end',
+): PhrasingContent[] {
+  const result = [...children];
+  const index = edge === 'start' ? 0 : result.length - 1;
+  const node = result[index];
+  if (node?.type !== 'text') return result;
+  const value =
+    edge === 'start'
+      ? node.value.replace(/^[\t \r\n]+/u, '')
+      : node.value.replace(/[\t \r\n]+$/u, '');
+  if (value.length === 0) result.splice(index, 1);
+  else result[index] = { ...node, value };
+  return result;
+}
+
+function inlineKnownTagOpen(
+  node: PhrasingContent,
+): InlineKnownTagName | undefined {
+  if (node.type !== 'html') return undefined;
+  const value = node.value.trim();
+  for (const tagName of inlineKnownTagNames) {
+    const prefix = `<${tagName}`;
+    if (
+      !hasCaseInsensitivePrefixAt(value, prefix, 0) ||
+      !hasTagNameBoundary(value, prefix.length)
+    )
+      continue;
+    const tagEnd = htmlTagEnd(value, 0);
+    if (
+      tagEnd === undefined ||
+      tagEnd !== value.length - 1 ||
+      value.slice(0, tagEnd).trimEnd().endsWith('/')
+    )
+      continue;
+    return tagName;
+  }
+  return undefined;
+}
+
+function inlineKnownTagClose(
+  node: PhrasingContent,
+): InlineKnownTagName | undefined {
+  if (node.type !== 'html') return undefined;
+  const value = node.value.trim().toLowerCase();
+  return inlineKnownTagNames.find((tagName) => value === `</${tagName}>`);
+}
+
+// 同一段落内の既知タグは、異種タグを含めて対応関係を確定できる場合だけ
+// 展開する。途中まで展開すると壊れたタグ境界の外側にある本文の構造を
+// 変えてしまうため、未閉じ・余分な閉じ・交差した終了タグは段落全体を
+// そのまま保持する。
+function supportsInlineKnownTagExpansion(
+  children: readonly PhrasingContent[],
+): boolean {
+  const stack: InlineKnownTagName[] = [];
+  for (const child of children) {
+    const opening = inlineKnownTagOpen(child);
+    if (opening !== undefined) {
+      if (opening === 'callout' && stack.includes('callout')) return false;
+      stack.push(opening);
+      continue;
+    }
+    const closing = inlineKnownTagClose(child);
+    if (closing === undefined) continue;
+    if (stack.pop() !== closing) return false;
+  }
+  return stack.length === 0;
+}
+
+function inlineKnownTagPairEnd(
+  children: readonly PhrasingContent[],
+  openingIndex: number,
+): number | undefined {
+  const opening = inlineKnownTagOpen(children[openingIndex]!);
+  if (opening === undefined) return undefined;
+  const stack: InlineKnownTagName[] = [opening];
+  for (let index = openingIndex + 1; index < children.length; index += 1) {
+    const nestedOpening = inlineKnownTagOpen(children[index]!);
+    if (nestedOpening !== undefined) {
+      stack.push(nestedOpening);
+      continue;
+    }
+    const closing = inlineKnownTagClose(children[index]!);
+    if (closing === undefined) continue;
+    if (stack.pop() !== closing) return undefined;
+    if (stack.length === 0) return index;
+  }
+  return undefined;
+}
+
+function expandInlineKnownTagsUnchecked(
+  children: readonly PhrasingContent[],
+): RootContent[] {
+  const openingIndex = children.findIndex(
+    (child) => inlineKnownTagOpen(child) !== undefined,
+  );
+  if (openingIndex === -1) return inlineParagraph(children);
+  const tagName = inlineKnownTagOpen(children[openingIndex]!);
+  const closingIndex = inlineKnownTagPairEnd(children, openingIndex);
+  if (tagName === undefined || closingIndex === undefined)
+    return inlineParagraph(children);
+
+  const before = trimInlineBoundaryWhitespace(
+    children.slice(0, openingIndex),
+    'end',
+  );
+  const inner = children.slice(openingIndex + 1, closingIndex);
+  const after = trimInlineBoundaryWhitespace(
+    children.slice(closingIndex + 1),
+    'start',
+  );
+  const beforeNodes = inlineParagraph(before);
+  const afterNodes = expandInlineKnownTagsUnchecked(after);
+
+  if (tagName === 'callout') {
+    const innerNodes = expandInlineKnownTagsUnchecked(inner);
+    const body = unified()
+      .use(remarkGfm)
+      .use(remarkStringify)
+      .stringify({ type: 'root', children: innerNodes })
+      .trim();
+    const openingTag = (children[openingIndex]! as { value: string }).value;
+    return [
+      ...beforeNodes,
+      { type: 'html', value: formatCallout(openingTag, body) },
+      ...afterNodes,
+    ];
+  }
+
+  return [
+    ...beforeNodes,
+    ...expandInlineKnownTagsUnchecked(inner),
+    ...afterNodes,
+  ];
+}
+
+function expandInlineKnownTags(children: PhrasingContent[]): RootContent[] {
+  if (!supportsInlineKnownTagExpansion(children))
+    return inlineParagraph(children);
+  try {
+    return expandInlineKnownTagsUnchecked(children);
+  } catch {
+    return inlineParagraph(children);
+  }
+}
+
+function prepareInlineExpansionNodes(
+  nodes: RootContent[],
+  sourceText: string,
+  protectedRanges: readonly ProtectedRange[],
+): RootContent[] {
+  for (const node of nodes) {
+    if (node.type === 'paragraph')
+      transformParent(node, sourceText, protectedRanges);
+    restoreUnderscoreTagsDeep(node, restorableHtmlOnlyNodeTypes);
+  }
+  return nodes;
 }
 
 // `<table>` の中身は、tableMarkdown が丸ごと置換する対象になる。<tr>/<td> だけを
@@ -1092,20 +1298,14 @@ function transformParent(
   );
   const transformed: RootContent[] = [];
   for (const child of parent.children as RootContent[]) {
-    const inline = inlineCallout(child);
-    if (inline !== undefined) {
-      transformed.push({
-        type: 'html',
-        value: restoreKnownUnderscoreTags(inline),
-      });
-      continue;
-    }
-    const syncedBlockChildren = inlineSyncedBlockChildren(child);
-    if (syncedBlockChildren !== undefined) {
-      for (const node of syncedBlockChildren)
-        restoreUnderscoreTagsDeep(node, restorableHtmlOnlyNodeTypes);
-      if (syncedBlockChildren.length > 0)
-        transformed.push({ type: 'paragraph', children: syncedBlockChildren });
+    if (child.type === 'paragraph') {
+      transformed.push(
+        ...prepareInlineExpansionNodes(
+          expandInlineKnownTags(child.children),
+          sourceText,
+          protectedRanges,
+        ),
+      );
       continue;
     }
     if (child.type === 'html') {
@@ -1135,7 +1335,9 @@ function transformParent(
         transformed.push(...fragment.children);
         continue;
       }
-      const syncedBlock = syncedBlockMarkdown(child.value);
+      const syncedBlock = syncedBlockTagNames
+        .map((tagName) => syncedBlockMarkdown(child.value, tagName))
+        .find((expansion) => expansion !== undefined);
       if (syncedBlock !== undefined) {
         const fragment = unified()
           .use(remarkParse)
@@ -1234,6 +1436,8 @@ export async function transformEnhancedMarkdown(
   markdown: string,
 ): Promise<string> {
   const { text: escaped, sentinel } = escapeExistingZeroWidthSpaces(markdown);
+  const { text: escapedHyphenatedTags, sentinel: hyphenatedTagSentinel } =
+    escapeExistingHyphenatedKnownTagsInCode(escaped);
   // 全sentinel候補（U+E000〜U+E00F）が本文と衝突し、既存のU+200Bを
   // 退避できなかった場合（極めて低頻度）、著者記述のU+200Bと太字
   // flanking補正で挿入するU+200Bを区別できない。太字補正の挿入・
@@ -1250,10 +1454,16 @@ export async function transformEnhancedMarkdown(
   // Markdownと完全一致する」という不変条件を維持するため）。整合性が
   // 崩れているrangeが1件でもあればpre-scan全体をfail-closedとする。
   const initialProtectedRanges = validateProtectedRanges(
-    collectCollapsedCodeRangesDeep(parseOnlyProcessor.parse(escaped), escaped),
-    escaped.length,
+    collectCollapsedCodeRangesDeep(
+      parseOnlyProcessor.parse(escapedHyphenatedTags),
+      escapedHyphenatedTags,
+    ),
+    escapedHyphenatedTags.length,
   );
-  const renamed = renameKnownUnderscoreTags(escaped, initialProtectedRanges);
+  const renamed = renameKnownUnderscoreTags(
+    escapedHyphenatedTags,
+    initialProtectedRanges,
+  );
   const { text: normalized, adjustedProtectedRanges: rawAdjustedRanges } =
     hasUnprotectableZeroWidthSpace
       ? {
@@ -1270,7 +1480,11 @@ export async function transformEnhancedMarkdown(
   const withoutInsertedZeroWidthSpaces = hasUnprotectableZeroWidthSpace
     ? result
     : removeZeroWidthSpaces(result);
+  const restoredHyphenatedTags =
+    hyphenatedTagSentinel === undefined
+      ? withoutInsertedZeroWidthSpaces
+      : withoutInsertedZeroWidthSpaces.replaceAll(hyphenatedTagSentinel, '-');
   return sentinel !== undefined
-    ? restoreEscapedZeroWidthSpaces(withoutInsertedZeroWidthSpaces, sentinel)
-    : withoutInsertedZeroWidthSpaces;
+    ? restoreEscapedZeroWidthSpaces(restoredHyphenatedTags, sentinel)
+    : restoredHyphenatedTags;
 }
